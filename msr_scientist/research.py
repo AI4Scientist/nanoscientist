@@ -67,7 +67,7 @@ Only output the JSON list, nothing else."""
         try:
             # Try to extract JSON from response
             import re
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
+            json_match = re.search(r'\[.*?\]', response, re.DOTALL)
             if json_match:
                 self.hypotheses = json.loads(json_match.group())
             else:
@@ -120,7 +120,7 @@ Only output the JSON, nothing else."""
         # Parse experiment design
         try:
             import re
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            json_match = re.search(r'\{.*?\}', response, re.DOTALL)
             if json_match:
                 experiment = json.loads(json_match.group())
             else:

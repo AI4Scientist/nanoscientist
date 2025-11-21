@@ -246,7 +246,7 @@ Following mini-swe-agent's philosophy:
 ### Supported Models
 
 - **OpenAI**: `gpt-4`, `gpt-4-turbo`, `gpt-3.5-turbo`
-- **Anthropic**: `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`
+- **Anthropic**: `claude-3-5-sonnet-20240620`, `claude-3-opus-20240229`
 
 ### Environment Variables
 

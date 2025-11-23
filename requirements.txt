@@ -1,9 +1,2 @@
-# Core dependencies
 openai>=1.0.0
 anthropic>=0.18.0
-
-# Optional but recommended
-pylatex>=1.4.0
-
-# For better paper generation (optional)
-# texlive-latex-base (system package, install via apt-get)

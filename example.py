@@ -1,8 +1,8 @@
 """
-Minimal example of MSR-Scientist usage.
+Minimal example of mini-researcher-agent usage.
 """
 
-from msr_scientist import create_agent
+from mini_researcher_agent import create_agent
 
 # Set HF_TOKEN in environment first:
 # export HF_TOKEN=your_token_here

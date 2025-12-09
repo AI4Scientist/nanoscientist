@@ -1,17 +1,22 @@
 """
-MSR-Scientist: A minimalist self-evolving researcher agent using smolagents.
+mini-researcher-agent: A minimalist self-evolving researcher agent using smolagents.
 
 Ultra-minimal implementation - everything in one file.
 """
 
-from smolagents import CodeAgent, HfApiModel, tool
-from typing import Optional, Any
 import subprocess
 import json
 import os
 import sys
 import tempfile
+import sys
+
 from pathlib import Path
+from pylatex import Document, Section, Command
+from pylatex.utils import NoEscape
+from dotenv import load_dotenv
+from smolagents import CodeAgent, InferenceClientModel, tool, LogLevel
+from typing import Optional, Any
 
 
 # ============================================================================
@@ -124,9 +129,6 @@ def draft_paper(
     result = {"title": title, "latex_file": None, "pdf_file": None, "error": None}
 
     try:
-        from pylatex import Document, Section, Command
-        from pylatex.utils import NoEscape
-
         os.makedirs(output_dir, exist_ok=True)
         sections_data = json.loads(sections) if isinstance(sections, str) else sections
 
@@ -211,7 +213,7 @@ class ResearchAgent:
     def __init__(
         self,
         model: Optional[Any] = None,
-        model_id: str = "Qwen/Qwen2.5-Coder-32B-Instruct",
+        model_id: str = "Qwen/Qwen3-4B-Instruct-2507",
         hf_token: Optional[str] = None,
         verbose: bool = True
     ):
@@ -219,16 +221,16 @@ class ResearchAgent:
         Initialize the ResearchAgent.
 
         Args:
-            model: Pre-configured model (if None, creates HfApiModel)
+            model: Pre-configured model (if None, creates InferenceClientModel)
             model_id: HuggingFace model ID
-            hf_token: HF token (or set HF_TOKEN env var)
+            hf_token: HF token (or set HF_TOKEN env var in .env file)
             verbose: Enable verbose output
         """
         if model is None:
             token = hf_token or os.getenv("HF_TOKEN")
             if not token:
-                raise ValueError("Set HF_TOKEN env var or pass hf_token parameter")
-            model = HfApiModel(model_id=model_id, token=token)
+                raise ValueError("Set HF_TOKEN in .env file or pass hf_token parameter")
+            model = InferenceClientModel(model_id=model_id, token=token)
 
         # Create agent with minimal tools
         self.agent = CodeAgent(
@@ -236,8 +238,8 @@ class ResearchAgent:
             model=model,
             additional_authorized_imports=['numpy', 'pandas', 'scipy', 'sklearn', 'matplotlib'],
             add_base_tools=True,
-            verbose=verbose,
-            system_prompt=SYSTEM_PROMPT
+            verbosity_level=LogLevel.INFO if verbose else LogLevel.OFF,
+            instructions=SYSTEM_PROMPT
         )
         self.verbose = verbose
 
@@ -252,7 +254,7 @@ class ResearchAgent:
             Research results
         """
         if self.verbose:
-            print(f"\n{'='*60}\n🔬 MSR-Scientist\n{'='*60}\n{task}\n{'='*60}\n")
+            print(f"\n{'='*60}\n🔬 mini-researcher-agent\n{'='*60}\n{task}\n{'='*60}\n")
 
         result = self.agent.run(task, **kwargs)
 
@@ -270,7 +272,7 @@ class ResearchAgent:
 # ============================================================================
 
 def create_agent(
-    model_id: str = "Qwen/Qwen2.5-Coder-32B-Instruct",
+    model_id: str = "Qwen/Qwen3-4B-Instruct-2507",
     hf_token: Optional[str] = None,
     **kwargs
 ) -> ResearchAgent:
@@ -283,10 +285,11 @@ def create_agent(
 # ============================================================================
 
 if __name__ == "__main__":
-    import sys
+    # Load environment variables from .env file
+    load_dotenv()
 
     if len(sys.argv) < 2:
-        print("Usage: python msr_scientist.py 'Your research task here'")
+        print("Usage: python mini_researcher_agent.py 'Your research task here'")
         sys.exit(1)
 
     task = " ".join(sys.argv[1:])

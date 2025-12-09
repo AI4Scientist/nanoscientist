@@ -1,4 +1,4 @@
-# MSR-Scientist 🔬
+# mini-researcher-agent 🔬
 
 **A minimalist self-evolving researcher agent using [smolagents](https://github.com/huggingface/smolagents).**
 
@@ -25,7 +25,7 @@ export HF_TOKEN=your_huggingface_token
 ## Quick Start
 
 ```python
-from msr_scientist import create_agent
+from mini_researcher_agent import create_agent
 
 agent = create_agent()
 agent.research("Compare bubble sort vs quicksort performance")
@@ -40,7 +40,7 @@ That's it! The agent will:
 ## CLI Usage
 
 ```bash
-python msr_scientist.py "Your research task here"
+python mini_researcher_agent.py "Your research task here"
 ```
 
 ## How It Works
@@ -59,7 +59,7 @@ The agent has 3 core tools:
 ## Example
 
 ```python
-from msr_scientist import create_agent
+from mini_researcher_agent import create_agent
 
 agent = create_agent()
 
@@ -79,8 +79,8 @@ Check `outputs/` for generated papers and results.
 ## Architecture
 
 ```
-MSR-Scientist/
-├── msr_scientist.py   # Everything (agent + tools + prompt)
+mini-researcher-agent/
+├── mini_researcher_agent.py   # Everything (agent + tools + prompt)
 ├── example.py         # Usage example
 ├── requirements.txt   # Dependencies
 └── README.md         # This file
@@ -115,7 +115,7 @@ Apache-2.0
 **Start researching:**
 
 ```python
-from msr_scientist import create_agent
+from mini_researcher_agent import create_agent
 create_agent().research("Your question here")
 ```
 

@@ -168,7 +168,7 @@ def execute_and_analyze(plan_file: str, workspace: str | None = None) -> str:
 
 
 @tool
-def generate_report(plan_file: str, citations_file: str, results_file: str, output_dir: str | None = None) -> str:
+def report_and_write(plan_file: str, citations_file: str, results_file: str, output_dir: str | None = None) -> str:
     """Generate a professional PDF research report with citations and figures.
 
     This tool synthesizes the research plan, execution results, and citations
@@ -240,7 +240,7 @@ Your workflow follows 3 stages:
    - Collects results and generates visualizations
    - Returns path to results.json
 
-3. **REPORT GENERATION**: Use generate_report(plan_file, citations_file, results_file) to create PDF
+3. **REPORT GENERATION**: Use report_and_write(plan_file, citations_file, results_file) to create PDF
    - Synthesizes findings into academic paper
    - Includes citations from research phase
    - Embeds figures from execution phase
@@ -248,7 +248,7 @@ Your workflow follows 3 stages:
 
 WORKFLOW AUTONOMY:
 - You decide when to call each tool based on the task
-- Typical flow: research_and_plan → execute_and_analyze → generate_report
+- Typical flow: research_and_plan → execute_and_analyze → report_and_write
 - Use outputs from each stage as inputs to the next
 - Handle errors gracefully and retry if needed
 
@@ -288,7 +288,7 @@ class ResearchAgent:
             model_kwargs['api_key'] = api_key
 
         self.agent = CodeAgent(
-            tools=[research_and_plan, execute_and_analyze, generate_report],
+            tools=[research_and_plan, execute_and_analyze, report_and_write],
             model=LiteLLMModel(**model_kwargs),
             add_base_tools=True,
             verbosity_level=LogLevel.INFO if verbose else LogLevel.OFF,

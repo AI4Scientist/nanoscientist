@@ -125,7 +125,7 @@ def example_5_programmatic_workflow():
     print("Example 5: Programmatic Workflow (Direct Tool Calls)")
     print("="*70 + "\n")
 
-    from main import research_and_plan, execute_and_analyze, generate_report
+    from main import research_and_plan, execute_and_analyze, report_and_write
     import json
 
     task = "Implement binary search and measure performance"
@@ -146,7 +146,7 @@ def example_5_programmatic_workflow():
     print(f"  ✓ Cost: ${stage2_data['cost_usd']:.4f}")
 
     print("\nStep 3: Generate Report...")
-    stage3_result = generate_report(
+    stage3_result = report_and_write(
         stage1_data['plan_file'],
         stage1_data['citations_file'],
         stage2_data['results_file']

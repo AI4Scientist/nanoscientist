@@ -1,9 +1,9 @@
 """researcher.py - Main orchestrator for autonomous research agent
 
 Smolagents-based orchestrator that autonomously coordinates 3 stages:
-1. Research & Planning (via research_plan.py)
-2. Execute & Analyze (via execute_analyze.py)
-3. Report Generation (via report_write.py)
+1. Research & Planning (via research_plan.py) → research_proposal.md
+2. Execute & Analyze (via execute_analyze.py) → workspace/ + README.md
+3. Report Generation (via report_write.py) → report/main.pdf
 
 The agent decides when to call each tool based on the research task.
 """
@@ -26,18 +26,18 @@ load_dotenv()
 
 @tool
 def research_and_plan(task: str, output_dir: str = "research_outputs") -> str:
-    """Conduct deep online research and generate a structured research plan.
+    """Conduct deep online research and generate a research proposal.
 
     This tool performs web-based research using Tavily or Perplexity, generates
-    a comprehensive research plan with hypotheses, methodology, and metrics,
-    and extracts citations from sources.
+    a comprehensive research proposal with hypotheses, methodology, metrics,
+    and citations in markdown format.
 
     Args:
         task: The research question or topic to investigate
-        output_dir: Directory to save research plan and citations
+        output_dir: Directory to save research_proposal.md
 
     Returns:
-        JSON string containing paths to generated files and summary
+        JSON string containing path to research_proposal.md and summary
     """
     from research_plan import DeepResearcher, Configuration, SearchAPI
 
@@ -57,59 +57,53 @@ def research_and_plan(task: str, output_dir: str = "research_outputs") -> str:
         temperature=pipeline_config.stage1_model.temperature
     )
 
-    # Run research
+    # Run research - returns markdown content
     researcher = DeepResearcher(config)
-    plan_dict, citations_list = researcher.run_research(task)
+    proposal_md = researcher.run_research(task, task_id)
 
-    # Add metadata
-    plan_dict["task_id"] = task_id
-    plan_dict["timestamp"] = datetime.now().isoformat()
+    # Save proposal markdown
+    proposal_file = task_dir / "research_proposal.md"
+    proposal_file.write_text(proposal_md, encoding='utf-8')
 
-    # Save outputs
-    plan_file = task_dir / "research_plan.json"
-    citations_file = task_dir / "citations.json"
-
-    with open(plan_file, 'w') as f:
-        json.dump(plan_dict, f, indent=2)
-
-    with open(citations_file, 'w') as f:
-        json.dump(citations_list, f, indent=2)
+    # Count hypotheses and citations from markdown
+    import re
+    hypotheses = re.findall(r'^\d+\.\s+.+$', proposal_md, re.MULTILINE)
+    citations = re.findall(r'-\s+\*\*ref\d+\*\*:', proposal_md)
 
     # Return result
     result = {
         "success": True,
         "task_id": task_id,
         "task_dir": str(task_dir),
-        "plan_file": str(plan_file),
-        "citations_file": str(citations_file),
-        "num_hypotheses": len(plan_dict.get("hypotheses", [])),
-        "num_citations": len(citations_list),
-        "methodology": plan_dict.get("methodology", {}).get("approach", "")
+        "proposal_file": str(proposal_file),
+        "num_hypotheses": len(hypotheses),
+        "num_citations": len(citations)
     }
 
     return json.dumps(result, indent=2)
 
 
 @tool
-def execute_and_analyze(plan_file: str, workspace: str | None = None) -> str:
+def execute_and_analyze(proposal_file: str, workspace: str | None = None) -> str:
     """Execute the research plan by implementing and running experiments.
 
-    This tool uses mini-swe-agent to convert the research plan into code,
-    execute experiments, and collect results.
+    This tool reads the research proposal, sets up a Docker-ready workspace,
+    uses mini-swe-agent to implement experiments, and generates a README
+    describing the artifacts.
 
     Args:
-        plan_file: Path to research_plan.json from research_and_plan tool
-        workspace: Directory for code execution
+        proposal_file: Path to research_proposal.md from research_and_plan tool
+        workspace: Directory for code execution (auto-generated if not provided)
 
     Returns:
-        JSON string containing execution results and status
+        JSON string containing execution results and workspace path
     """
     from execute_analyze import run_implementation, validate_results
 
     # Auto-generate workspace if not provided
     if workspace is None:
-        plan_path = Path(plan_file)
-        workspace = str(plan_path.parent / "workspace")
+        proposal_path = Path(proposal_file)
+        workspace = str(proposal_path.parent / "workspace")
 
     # Load centralized config
     pipeline_config = get_config()
@@ -119,7 +113,7 @@ def execute_and_analyze(plan_file: str, workspace: str | None = None) -> str:
     normalized_model = model_config.normalize_model_id()
 
     results = run_implementation(
-        plan_file=plan_file,
+        proposal_file=proposal_file,
         workspace=workspace,
         model_name=normalized_model,
         step_limit=pipeline_config.stage2_step_limit,
@@ -129,37 +123,14 @@ def execute_and_analyze(plan_file: str, workspace: str | None = None) -> str:
     # Validate results
     is_valid, msg = validate_results(results)
 
-    # Save results to workspace
-    workspace_path = Path(workspace)
-    results_file = workspace_path / "results.json"
-
-    # Prepare results data for saving
-    results_data = {
-        "task": results.get("task", ""),
-        "hypotheses_tested": results.get("hypotheses_tested", []),
-        "findings": results.get("findings", []),
-        "metrics": results.get("metrics", {}),
-        "figures": results.get("figures", []),
-        "execution_summary": {
-            "exit_status": results.get("exit_status", ""),
-            "steps_taken": results.get("message_count", 0),
-            "cost_usd": results.get("cost_usd", 0.0)
-        },
-        "timestamp": datetime.now().isoformat()
-    }
-
-    with open(results_file, 'w') as f:
-        json.dump(results_data, f, indent=2)
-
     # Prepare return value
     result = {
         "success": is_valid,
         "validation_message": msg,
         "exit_status": results.get("exit_status", ""),
-        "results_file": str(results_file),
         "workspace": workspace,
-        "num_findings": len(results.get("findings", [])),
-        "num_figures": len(results.get("figures", [])),
+        "readme_path": results.get("readme_path", ""),
+        "artifacts": results.get("artifacts", {}),
         "cost_usd": results.get("cost_usd", 0.0),
         "message_count": results.get("message_count", 0)
     }
@@ -168,17 +139,16 @@ def execute_and_analyze(plan_file: str, workspace: str | None = None) -> str:
 
 
 @tool
-def report_and_write(plan_file: str, citations_file: str, results_file: str, output_dir: str | None = None) -> str:
-    """Generate a professional PDF research report with citations and figures.
+def report_and_write(proposal_file: str, workspace: str, output_dir: str | None = None) -> str:
+    """Generate a professional PDF research report using ACM template.
 
-    This tool synthesizes the research plan, execution results, and citations
-    into a comprehensive academic paper in PDF format.
+    This tool reads the research proposal and workspace artifacts to generate
+    a comprehensive academic paper in PDF format using the ACM Conference template.
 
     Args:
-        plan_file: Path to research_plan.json
-        citations_file: Path to citations.json
-        results_file: Path to results.json
-        output_dir: Directory for PDF output
+        proposal_file: Path to research_proposal.md
+        workspace: Path to workspace directory with artifacts
+        output_dir: Directory for PDF output (auto-generated if not provided)
 
     Returns:
         JSON string containing PDF path and status
@@ -187,16 +157,15 @@ def report_and_write(plan_file: str, citations_file: str, results_file: str, out
 
     # Auto-generate output_dir if not provided
     if output_dir is None:
-        output_dir = str(Path(plan_file).parent)
+        output_dir = str(Path(proposal_file).parent)
 
     # Load centralized config
     pipeline_config = get_config()
 
     try:
         pdf_path = create_pdf_report(
-            plan_file=plan_file,
-            citations_file=citations_file,
-            results_file=results_file,
+            proposal_file=proposal_file,
+            workspace_path=workspace,
             output_dir=output_dir,
             model_id=pipeline_config.stage3_model.model_id
         )
@@ -226,31 +195,40 @@ def report_and_write(plan_file: str, citations_file: str, results_file: str, out
 
 SYSTEM_PROMPT = """You are an autonomous research agent that conducts end-to-end research projects.
 
-Your workflow follows 3 stages:
+Your workflow follows 3 stages, all using markdown-based files:
 
 1. **RESEARCH & PLANNING**: Use research_and_plan(task) to conduct deep online research
    - Performs web search with Tavily or Perplexity
-   - Generates structured research plan with hypotheses, methodology, metrics
-   - Extracts citations from sources
-   - Returns paths to research_plan.json and citations.json
+   - Generates research_proposal.md with:
+     - Hypotheses, methodology, metrics
+     - Citations in [@ref] format
+     - Background context from literature
+   - Returns path to research_proposal.md
 
-2. **EXECUTE & ANALYZE**: Use execute_and_analyze(plan_file) to implement the research
-   - Converts research plan to code
+2. **EXECUTE & ANALYZE**: Use execute_and_analyze(proposal_file) to implement the research
+   - Reads research_proposal.md for context
+   - Sets up Docker-ready workspace (Dockerfile, requirements.txt, main.py)
    - Executes experiments using mini-swe-agent
-   - Collects results and generates visualizations
-   - Returns path to results.json
+   - Generates workspace/README.md describing artifacts
+   - Returns workspace path
 
-3. **REPORT GENERATION**: Use report_and_write(plan_file, citations_file, results_file) to create PDF
-   - Synthesizes findings into academic paper
-   - Includes citations from research phase
-   - Embeds figures from execution phase
+3. **REPORT GENERATION**: Use report_and_write(proposal_file, workspace) to create PDF
+   - Reads research_proposal.md for content and citations
+   - Reads workspace/README.md for artifact information
+   - Uses ACM Conference template for professional formatting
+   - Converts [@ref] citations to LaTeX \\cite{ref}
    - Returns path to final PDF report
 
 WORKFLOW AUTONOMY:
 - You decide when to call each tool based on the task
 - Typical flow: research_and_plan → execute_and_analyze → report_and_write
-- Use outputs from each stage as inputs to the next
+- Pass proposal_file and workspace paths between stages
 - Handle errors gracefully and retry if needed
+
+OUTPUT FILES:
+- research_proposal.md: Single source of truth with plan + citations
+- workspace/: Contains code, figures, data, README.md
+- report/: Contains ACM template with main.tex, reference.bib, main.pdf
 
 Be thorough, systematic, and ensure all three stages complete successfully.
 """
@@ -433,7 +411,7 @@ class ResearchAgent:
             ],
             executor_kwargs={
                 "additional_functions": {
-                    "open": open,  # Allow file operations for reading research plans and results
+                    "open": open,  # Allow file operations for reading research proposals
                 }
             }
         )

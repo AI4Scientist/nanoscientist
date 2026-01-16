@@ -1,12 +1,13 @@
 """research_plan.py - Stage 1: Research & Planning module
 
-Refactored from deep_research.py to provide minimalist research functionality.
-Removes Rich console UI and CLI, returns structured data for pipeline integration.
+Generates research_proposal.md - a markdown file containing the research plan,
+citations, and background context for the pipeline.
 """
 
 import os
+from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, List
 
 import requests
 import litellm
@@ -285,13 +286,15 @@ class DeepResearcher:
         final = f"## Summary\n\n{running_summary}\n\n## Sources\n\n{all_sources}"
         return final
 
-    def run_research(self, topic: str) -> Tuple[Dict, List[Dict]]:
-        """Run the research and return structured data.
+    def run_research(self, topic: str, task_id: str) -> str:
+        """Run the research and return markdown proposal.
+
+        Args:
+            topic: Research topic/task
+            task_id: Unique identifier for this task
 
         Returns:
-            Tuple of (plan_dict, citations_list)
-            - plan_dict: Research plan with hypotheses, methodology, metrics
-            - citations_list: List of citation dictionaries
+            Markdown string containing the research proposal
         """
         research_loop_count = 0
         sources_gathered = []
@@ -316,7 +319,111 @@ class DeepResearcher:
         # Extract citations from sources
         citations_list = self._extract_citations(sources_gathered)
 
-        return plan_dict, citations_list
+        # Generate markdown proposal
+        proposal_md = self._generate_proposal_markdown(
+            task_id, topic, plan_dict, citations_list, running_summary
+        )
+
+        return proposal_md
+
+    def _generate_proposal_markdown(
+        self,
+        task_id: str,
+        topic: str,
+        plan: Dict,
+        citations: List[Dict],
+        background_summary: str
+    ) -> str:
+        """Generate the research_proposal.md content.
+
+        Args:
+            task_id: Unique task identifier
+            topic: Research topic
+            plan: Structured research plan
+            citations: List of citation dictionaries
+            background_summary: Research summary from web search
+
+        Returns:
+            Markdown string for research_proposal.md
+        """
+        timestamp = datetime.now().isoformat()
+
+        # Build markdown content
+        md = f"""---
+task_id: {task_id}
+created_at: {timestamp}
+template: ACM_Conference_Proceedings_Primary_Article_Template
+---
+
+# Research Proposal: {plan.get('task', topic)}
+
+## Hypotheses
+
+"""
+        for i, h in enumerate(plan.get('hypotheses', []), 1):
+            md += f"{i}. {h}\n"
+
+        md += """
+## Methodology
+
+"""
+        methodology = plan.get('methodology', {})
+        md += f"**Approach:** {methodology.get('approach', 'To be determined')}\n\n"
+
+        md += "**Steps:**\n"
+        for i, step in enumerate(methodology.get('steps', []), 1):
+            md += f"{i}. {step}\n"
+
+        md += "\n**Tools Needed:**\n"
+        for tool in methodology.get('tools_needed', ['numpy', 'pandas', 'matplotlib']):
+            md += f"- {tool}\n"
+
+        md += """
+## Metrics
+
+"""
+        metrics = plan.get('metrics', {})
+        md += f"**Primary:** {metrics.get('primary', 'To be determined')}\n\n"
+        md += "**Secondary:**\n"
+        for metric in metrics.get('secondary', []):
+            md += f"- {metric}\n"
+
+        md += """
+## Expected Deliverables
+
+"""
+        for deliverable in plan.get('expected_deliverables', ['Research report']):
+            md += f"- {deliverable}\n"
+
+        md += """
+---
+
+## Citations
+
+"""
+        for c in citations:
+            # Format: - **ref1**: Author (Year). "Title". *Publisher*. URL
+            authors = c.get('authors', 'Unknown')
+            year = c.get('year', 'n.d.')
+            title = c.get('title', 'Untitled')
+            publisher = c.get('publisher', '')
+            url = c.get('url', '')
+            bibtex_key = c.get('bibtex_key', f"ref{c.get('id', 0)}")
+
+            publisher_str = f" *{publisher}*." if publisher else ""
+            md += f"- **{bibtex_key}**: {authors} ({year}). \"{title}\".{publisher_str} {url}\n"
+
+        md += """
+---
+
+## Background Context
+
+"""
+        # Add the research summary as background context
+        # Convert any source references to citation format
+        md += background_summary + "\n"
+
+        return md
 
     def _extract_plan_from_summary(self, topic: str, summary: str) -> Dict:
         """Extract structured research plan from summary using LLM."""

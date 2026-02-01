@@ -57,6 +57,7 @@ ENV/
 *.vrb
 *.bbl
 *.blg
+*.log
 
 # Research outputs (generated artifacts)
 research_outputs/
@@ -65,3 +66,5 @@ research_outputs/
 .DS_Store
 Thumbs.db
 .directory
+
+test*

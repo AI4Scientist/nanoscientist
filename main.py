@@ -26,6 +26,20 @@ ENABLE_DOCKER = os.getenv("ENABLE_DOCKER", "False").lower() == "true"
 DOCKER_IMAGE = os.getenv("DOCKER_IMAGE", "python:3.13")
 MAX_CONTEXT_CHARS = 3000
 
+# Virtual environment path for local execution
+VENV_PATH = os.path.join(os.getcwd(), ".venv")
+VENV_PYTHON = os.path.join(VENV_PATH, "bin", "python3")
+
+# Stage-specific environment configuration
+# Survey and paper writing ALWAYS use local .venv
+# Method implementation and evaluation can use Docker (if ENABLE_DOCKER=true) or local .venv
+STAGE_USE_DOCKER = {
+    "survey": False,                           # Always local .venv
+    "method": ENABLE_DOCKER,                   # Docker if enabled, else local .venv
+    "evaluation": ENABLE_DOCKER,               # Docker if enabled, else local .venv
+    "paper": False                             # Always local .venv
+}
+
 # Per-stage budget allocation (fractions of max_rounds)
 STAGE_BUDGET = {
     "survey": 0.15,       # 15% - literature survey
@@ -406,7 +420,8 @@ Deliver complete experiment code in a single iteration when possible.
 
         # Run experiment if code was generated
         if "experiment.py" in files:
-            print(f"\n🧪 Running experiment ({'Docker' if ENABLE_DOCKER else 'Local'})...")
+            use_docker = STAGE_USE_DOCKER.get("evaluation", True)
+            print(f"\n🧪 Running experiment ({'Docker' if use_docker else 'Local'})...")
             task_id = f"eval_{inputs['iteration']}"
             exec_result = run_experiment(
                 {
@@ -414,7 +429,7 @@ Deliver complete experiment code in a single iteration when possible.
                     "requirements_txt": files.get("requirements.txt", ""),
                     "task_id": task_id
                 },
-                mode="docker" if ENABLE_DOCKER else "local",
+                mode="docker" if use_docker else "local",
                 image=DOCKER_IMAGE
             )
             ctrl["experiment_output"] = exec_result
@@ -735,7 +750,13 @@ def main():
     print("Mini Researcher Agent - PocketFlow Edition")
     print(f"{'='*80}")
     print(f"\nResearch Question: {question}")
-    print(f"Docker Mode: {'Enabled' if ENABLE_DOCKER else 'Disabled (local)'}")
+    print(f"Environment Configuration:")
+    print(f"  Survey: Local (.venv)")
+    method_env = "Docker" if ENABLE_DOCKER else "Local (.venv)"
+    eval_env = "Docker" if ENABLE_DOCKER else "Local (.venv)"
+    print(f"  Method: {method_env}" + (f" (Image: {DOCKER_IMAGE})" if ENABLE_DOCKER else ""))
+    print(f"  Evaluation: {eval_env}" + (f" (Image: {DOCKER_IMAGE})" if ENABLE_DOCKER else ""))
+    print(f"  Paper: Local (.venv)")
     print(f"Model: {os.getenv('OPENROUTER_MODEL', 'anthropic/claude-haiku-4.5')}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

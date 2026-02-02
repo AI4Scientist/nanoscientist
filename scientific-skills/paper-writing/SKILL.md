@@ -199,6 +199,53 @@ Theoretic Bound" or "Limitations of the Comparison Model."
   - "Future Work" as a numbered list of topics. → Write a paragraph
     discussing the most promising 2-3 directions with reasoning.
 
+**Eliminating Redundancy** (CRITICAL — this is the second most common
+failure after list-itis):
+
+A paper is NOT a set of independent sections that each summarize the
+whole story. Each section has ONE job. Content that appears in one
+section must NOT be restated in another. Apply these rules:
+
+  - The paper's main claim should be stated precisely ONCE (in the
+    theorem or central result). The abstract and introduction may
+    preview it, and the conclusion may echo it, but each must use
+    DIFFERENT framing and emphasis — not the same sentence repeated.
+  - Do NOT create a "Contributions" subsection AND a "Distinction from
+    Prior Work" subsection AND a conclusion that re-lists contributions.
+    State contributions once in the introduction. The related work
+    section should position your work via contrast with prior work, not
+    re-enumerate your contributions. The conclusion should reflect on
+    significance, not re-list.
+  - Do NOT create a "Motivation and Significance" subsection that
+    restates the introduction's opening paragraphs. The introduction
+    IS the motivation. Fold significance into the narrative.
+  - The Discussion section must add NEW insight — synthesis, implication,
+    connection to broader context — NOT recap what Results already showed.
+    If a Discussion subsection merely summarizes a table from Experiments,
+    delete it.
+  - Each table must present information not derivable by simple arithmetic
+    from another table. Do not include both a raw-counts table and a
+    ratios table if the ratios are just column A / column B. Pick the
+    more informative one, or add a ratio column to the original table.
+  - Technical details (e.g., Stirling's approximation, non-comparison
+    sorting examples) should appear in ONE place with cross-references
+    elsewhere, not be re-explained in multiple sections.
+  - Before writing any subsection, ask: "Does this add information or
+    argument that does not appear elsewhere in the paper?" If not, merge
+    it into an existing section or delete it.
+
+**Section-by-Section Redundancy Test**: After drafting, verify:
+  - Abstract: previews the story (unique framing)
+  - Introduction: motivates + states contributions (the ONE place)
+  - Related Work: positions against literature (no re-listing of contributions)
+  - Method: presents the approach (technical details live here)
+  - Experiments: presents evidence (tables + interpretation)
+  - Discussion: synthesizes NEW insights (not recap)
+  - Conclusion: reflects on significance (different angle from introduction)
+
+If any two sections say the same thing in the same way, one of them must
+be rewritten or removed.
+
 INPUT ARTIFACTS:
 - Literature Survey: {related_work[:3000]}
 - Method Implementation: {method_description}
@@ -616,6 +663,35 @@ Each paragraph must:
 
 Avoid: single-sentence paragraphs, paragraphs that are just a setup line for a list, paragraphs where every sentence starts with the same word.
 
+### No Redundancy
+
+Every section must earn its place by contributing information or argument not found elsewhere in the paper. Redundancy inflates page count without advancing the reader's understanding and signals weak editorial discipline to reviewers.
+
+**The One-Home Rule**: Every idea, claim, or technical detail has ONE home section. Other sections may reference it, but must not re-explain it.
+
+| Content | Home Section | Other sections should... |
+|---------|-------------|------------------------|
+| Main theorem/claim | Method | Reference, not restate |
+| Contributions | Introduction | Not re-list in Related Work or Conclusion |
+| Motivation | Introduction opening | Not re-argue in a "Significance" subsection |
+| Technical details (e.g., Stirling) | Method (where first used) | Cite "as shown in Section X" |
+| Non-comparison alternatives | Related Work OR Discussion | Appear in one, not both |
+| Experimental findings | Experiments | Discussion interprets, not recaps |
+
+**Common redundancy patterns to eliminate**:
+
+1. **Echo redundancy**: The main result stated identically in abstract, introduction, theorem, discussion, and conclusion. Each occurrence must use a different framing — the abstract previews, the theorem formalizes, the conclusion reflects on significance.
+
+2. **Parallel sections**: "Contributions" in Introduction + "Distinction from Prior Work" in Related Work + re-listed contributions in Conclusion. These are the same content three times. Merge into one.
+
+3. **Discussion-as-recap**: Discussion subsections that summarize what Results already showed ("MergeSort achieves the bound" restated for the fourth time). The Discussion must add *new insight* — why results matter, what they imply for future work, how they connect to the broader field.
+
+4. **Redundant tables**: A raw-counts table and a ratios table where the ratios are trivially derived from the counts. Combine into one table, or keep only the more informative view.
+
+5. **Subsections that repackage the Introduction**: "Motivation and Significance" restating the opening, "Paper Organization" restating what the narrative already conveys. Delete these; the Introduction IS the motivation and organization.
+
+**Self-test**: After drafting, for each subsection ask: "If I deleted this, would the reader miss any information not available elsewhere?" If no, delete it.
+
 ### Proof and Theorem Presentation
 
 Present proofs as continuous mathematical reasoning:
@@ -726,9 +802,26 @@ Timsort exploits existing order in practice, tight lower bounds
 for various measures of presortedness are still open...
 ```
 
+### ❌ Redundancy Pitfalls
+
+**6. Triple-stating contributions**
+Contributions listed in the Introduction, re-listed as "Distinction from Prior Work" in Related Work, and re-listed again in the Conclusion. State them once in the Introduction. Related Work should contrast with prior work through narrative, not re-enumerate your contributions. The Conclusion should reflect on significance from a new angle.
+
+**7. Discussion that recaps Results**
+A "Discussion" section that says "MergeSort achieves the bound (Table 2)" after the Results section already said "MergeSort achieves the bound (Table 2)." Discussion must synthesize — connect findings to broader implications, explain surprising results, acknowledge what the experiments cannot show. If a Discussion paragraph could be moved into Results without anyone noticing, it belongs there, not in Discussion.
+
+**8. Redundant tables**
+Presenting Table 1 (raw comparison counts) and Table 2 (ratios = counts / lower bound). The ratio is trivial arithmetic. Combine into one table with a ratio column, or keep only the table that tells the story more clearly.
+
+**9. Re-explaining technical details across sections**
+Stirling's approximation appearing in the proof, in its own subsection, and again in an empirical decomposition table. Present the detail once where it is first needed; reference it elsewhere.
+
+**10. "Motivation and Significance" subsection that restates the Introduction**
+The Introduction's opening paragraphs already motivate the work. A separate subsection that re-argues the same motivation wastes space and creates a circular reading experience.
+
 ### ❌ Technical Pitfalls
 
-**6. Hallucinated Citations**
+**11. Hallucinated Citations**
 ```latex
 % BAD: Made-up paper
 \\cite{smith2024efficient}  % This paper doesn't exist!
@@ -737,7 +830,7 @@ for various measures of presortedness are still open...
 \\cite{vaswani2017attention}  % Transformer paper, verified
 ```
 
-**7. Markdown in LaTeX**
+**12. Markdown in LaTeX**
 ```latex
 % BAD:
 **Our method** achieves #1 results
@@ -746,7 +839,7 @@ for various measures of presortedness are still open...
 \\textbf{Our method} achieves \\#1 results
 ```
 
-**8. Missing Error Bars**
+**13. Missing Error Bars**
 ```latex
 % BAD:
 Our method: 94.2\\%
@@ -755,7 +848,7 @@ Our method: 94.2\\%
 Our method: $94.2 \\pm 0.3\\%$
 ```
 
-**9. No Statistical Tests**
+**14. No Statistical Tests**
 ```latex
 % BAD:
 "significantly better"

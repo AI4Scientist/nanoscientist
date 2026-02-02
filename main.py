@@ -113,12 +113,12 @@ Return JSON only:
 {{
   "complexity": "low or medium or high",
   "reasoning": "brief explanation",
-  "max_rounds": 20,
+  "max_rounds": 30,
   "expected_output": "brief or technical or conference"
 }}
 ```
 
-max_rounds guide: 20 for low, 100 for medium, 300 for high.
+max_rounds guide: 30 for low, 100 for medium, 300 for high.
 Be conservative - if uncertain, choose lower complexity.
 """
         return call_llm(prompt, max_tokens=1024)

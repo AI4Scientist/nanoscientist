@@ -51,14 +51,17 @@ Consider:
 3. Evaluation depth: Basic metrics vs ablations vs statistical tests
 4. Expected output: Brief document vs technical report vs conference paper
 
-Return YAML:
-```yaml
-complexity: low|medium|high
-reasoning: <detailed explanation of why this classification>
-max_rounds: <20 for low, 100 for medium, 300 for high>
-expected_output: brief|technical|conference
+Return JSON:
+```json
+{{
+  "complexity": "low or medium or high",
+  "reasoning": "detailed explanation of why this classification",
+  "max_rounds": 20,
+  "expected_output": "brief or technical or conference"
+}}
 ```
 
+max_rounds guide: 20 for low, 100 for medium, 300 for high.
 Be conservative - if uncertain, choose lower complexity.
 """
         return call_llm(prompt)
@@ -141,19 +144,21 @@ Current Iteration: {inputs['iteration']}
 {"Previous Output (refine if needed):" if inputs['previous_output'] else "First iteration - start from scratch."}
 {inputs['previous_output'] or ""}
 
-Return YAML with:
-```yaml
-status: continue|done  # continue if needs refinement, done if satisfied
-output:
-  survey_report_md: |
-    <comprehensive markdown literature survey>
-  references_bib: |
-    <BibTeX bibliography>
-  key_papers: <list of most important papers>
-rounds_used: <integer: how many rounds this iteration consumed>
-reasoning: <why continue or done>
+Return JSON:
+```json
+{{
+  "status": "continue or done",
+  "output": {{
+    "survey_report_md": "comprehensive markdown literature survey here",
+    "references_bib": "BibTeX bibliography here",
+    "key_papers": ["paper1", "paper2"]
+  }},
+  "rounds_used": 1,
+  "reasoning": "why continue or done"
+}}
 ```
 
+IMPORTANT: Escape special characters in JSON strings (newlines as \\n, quotes as \\").
 If status is "done", ensure the survey is comprehensive and publication-ready.
 """
         return call_llm(prompt, max_tokens=8192)
@@ -211,21 +216,21 @@ Current Iteration: {inputs['iteration']}
 {"Previous Output:" if inputs['previous_output'] else "First iteration."}
 {json.dumps(inputs['previous_output'], indent=2) if inputs['previous_output'] else ""}
 
-Return YAML with:
-```yaml
-status: continue|done
-output:
-  design_md: |
-    <method design document>
-  code_files:
-    - filename: <name>
-      content: |
-        <code>
-  requirements_txt: |
-    <dependencies>
-rounds_used: <integer>
-reasoning: <why continue or done>
+Return JSON:
+```json
+{{
+  "status": "continue or done",
+  "output": {{
+    "design_md": "method design document here",
+    "code_files": [{{"filename": "main.py", "content": "code here"}}],
+    "requirements_txt": "dependencies here"
+  }},
+  "rounds_used": 1,
+  "reasoning": "why continue or done"
+}}
 ```
+
+IMPORTANT: Escape special characters in JSON strings (newlines as \\n, quotes as \\").
 """
         return call_llm(prompt, max_tokens=8192)
 
@@ -284,22 +289,21 @@ Generate experiment code that will:
 2. Collect metrics
 3. Generate plots and tables
 
-Return YAML with:
-```yaml
-status: continue|done
-experiment_code:
-  experiment_py: |
-    <Python code for experiment.py>
-  requirements_txt: |
-    <dependencies>
-expected_outputs:
-  - results.csv
-  - figures/plot1.png
-  - tables.tex
-rounds_used: <integer>
-reasoning: <why continue or done>
+Return JSON:
+```json
+{{
+  "status": "continue or done",
+  "experiment_code": {{
+    "experiment_py": "self-contained Python code here",
+    "requirements_txt": "dependencies here"
+  }},
+  "expected_outputs": ["results.csv", "figures/plot1.png"],
+  "rounds_used": 1,
+  "reasoning": "why continue or done"
+}}
 ```
 
+IMPORTANT: Escape special characters in JSON strings (newlines as \\n, quotes as \\").
 The experiment code should be self-contained and save results to files.
 """
         response = call_llm(prompt, max_tokens=8192)
@@ -385,17 +389,19 @@ Available Content:
 
 {"⚠️ EMERGENCY MODE: Budget exceeded. Generate brief summary paper with available results." if inputs['emergency'] else ""}
 
-Return YAML with:
-```yaml
-paper:
-  main_tex: |
-    <complete LaTeX paper using ACM template>
-  references_bib: |
-    <BibTeX bibliography>
-  title: <paper title>
-  abstract: <paper abstract>
+Return JSON:
+```json
+{{
+  "paper": {{
+    "main_tex": "complete LaTeX paper using ACM template here",
+    "references_bib": "BibTeX bibliography here",
+    "title": "paper title",
+    "abstract": "paper abstract"
+  }}
+}}
 ```
 
+IMPORTANT: Escape special characters in JSON strings (newlines as \\n, quotes as \\", backslashes as \\\\).
 Include all sections: Abstract, Introduction, Related Work, Method, Experiments, Conclusion.
 """
         return call_llm(prompt, max_tokens=16384)
@@ -427,16 +433,12 @@ class SaveArtifactsNode(Node):
         pass  # No LLM call
 
     def post(self, shared, prep_res, exec_res):
-        # Create output directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        question_hash = abs(hash(shared["question"])) % 10000
-        output_dir = Path(f"research_outputs/{timestamp}_{question_hash}")
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Reuse the single output directory created at pipeline start
+        output_dir = Path(shared["output_dir"])
 
-        # Save full state
+        # Save full state snapshot
         state_file = output_dir / "state.json"
         with open(state_file, "w") as f:
-            # Convert Path objects to strings for JSON serialization
             json_safe_shared = {k: str(v) if isinstance(v, Path) else v
                               for k, v in shared.items()}
             json.dump(json_safe_shared, f, indent=2, default=str)
@@ -475,7 +477,6 @@ class SaveArtifactsNode(Node):
                 if "references_bib" in paper:
                     (paper_dir / "references.bib").write_text(paper["references_bib"])
 
-        shared["output_dir"] = str(output_dir)
         print(f"💾 Saved {self.stage_name} artifacts to: {output_dir}")
 
         return "default"
@@ -561,10 +562,16 @@ def main():
     print(f"Docker Mode: {'Enabled' if ENABLE_DOCKER else 'Disabled (local)'}")
     print(f"Model: {os.getenv('OPENROUTER_MODEL', 'anthropic/claude-haiku-4.5')}")
 
-    # Initialize shared state
+    # Initialize shared state with a single output directory for the entire task
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    question_hash = abs(hash(question)) % 10000
+    output_dir = Path(f"research_outputs/{timestamp}_{question_hash}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     shared = {
         "question": question,
-        "start_time": datetime.now().isoformat()
+        "start_time": datetime.now().isoformat(),
+        "output_dir": str(output_dir)
     }
 
     # Create and run pipeline

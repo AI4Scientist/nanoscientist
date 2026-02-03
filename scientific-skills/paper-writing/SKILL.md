@@ -17,6 +17,8 @@ Generate publication-ready CS papers for top-tier venues (NeurIPS, ICML, ICLR, A
 
 **Core Principle**: Produce complete, technically accurate drafts that serve as strong starting points for human refinement.
 
+**Figures-First Rule**: Every paper MUST include figures. A paper without figures is incomplete. Use TikZ diagrams to illustrate method/architecture and pgfplots or experiment-generated plots for results. Figures communicate faster than text — reviewers skim figures before reading prose. At minimum, every paper needs: (1) a method/architecture diagram, and (2) a results visualization.
+
 **Critical Rule**: **NEVER hallucinate citations.** Every reference must be verified programmatically.
 
 ---
@@ -807,7 +809,11 @@ which gives the $\Omega(N \log N)$ lower bound.
 
 ### Figures and Diagrams
 
-Papers with clear diagrams are easier to review and more likely to be accepted. Use figures to explain architecture, data flow, and experimental results — readers process visual information faster than dense prose.
+**Figures are mandatory, not optional.** Papers without figures are harder to review and less likely to be accepted. Reviewers skim figures and tables first — if your paper has none, it signals incomplete work. Every paper must include at minimum:
+- **One method/architecture diagram** (TikZ) showing how the system works
+- **One results figure** (pgfplots or \includegraphics from experiments) visualizing key findings
+
+Use figures to explain architecture, data flow, and experimental results — readers process visual information faster than dense prose.
 
 **When to use which figure type**:
 

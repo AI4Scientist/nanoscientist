@@ -17,11 +17,13 @@ Conduct comprehensive literature surveys for computer science research by search
 
 **Core Principle**: Systematic, reproducible literature discovery with verified citations.
 
+**Figures-First Rule**: Every survey MUST produce visualizations. A survey report without figures is incomplete — readers need visual summaries to grasp the landscape. At minimum, generate: (1) a publication timeline showing research volume over time, and (2) a topic distribution chart. Citation network graphs and trend visualizations are strongly encouraged. Save all figures as both PDF and PNG.
+
 **Key Features**:
 - CS-specific database search (arXiv, DBLP, ACL Anthology, Papers with Code)
 - Citation network analysis (forward/backward citations)
 - Trend detection (emerging topics, influential authors)
-- Automated report generation with BibTeX
+- Automated report generation with BibTeX and figures
 
 ---
 
@@ -333,12 +335,19 @@ INPUTS:
 
 STRUCTURE:
 1. **Overview**: What is the research area?
-2. **Historical Development**: How has the field evolved?
-3. **Major Approaches**: Group by identified topics/clusters
-4. **Seminal Works**: Key foundational papers
-5. **Recent Advances**: State-of-the-art methods (2022-2024)
-6. **Research Gaps**: What's missing or underexplored?
-7. **Future Directions**: Where is the field heading?
+2. **Research Landscape** (MUST include figures):
+   - Timeline figure showing publication volume over time
+   - Topic distribution figure showing research cluster sizes
+3. **Historical Development**: How has the field evolved?
+4. **Major Approaches**: Group by identified topics/clusters
+5. **Seminal Works**: Key foundational papers
+6. **Recent Advances**: State-of-the-art methods (2022-2024)
+7. **Research Gaps**: What's missing or underexplored?
+8. **Future Directions**: Where is the field heading?
+
+IMPORTANT: Embed generated figures in the report using markdown
+image syntax: ![Caption](figures/filename.png). A survey report
+without figures is incomplete.
 
 OUTPUT FORMAT: Markdown with \\cite{{arxiv_id}} citations
 """
@@ -539,6 +548,8 @@ Every survey must:
 - ✅ **Verified citations** (no hallucinations)
 - ✅ **BibTeX exported** (ready for papers)
 - ✅ **Temporal trends** identified (emerging topics)
+- ✅ **Figures generated** (timeline + topic distribution, at minimum)
+- ✅ **Dual format** figures saved (PDF vector + PNG 300 DPI)
 
 ---
 

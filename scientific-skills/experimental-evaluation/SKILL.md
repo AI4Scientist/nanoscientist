@@ -17,6 +17,8 @@ Conduct rigorous experimental evaluation of CS systems following [ACM Algorithm 
 
 **Core Principle**: Fair, reproducible comparisons that provide statistical confidence in results.
 
+**Figures-First Rule**: Every evaluation MUST produce figures. Tables alone are not sufficient — reviewers and readers expect visual summaries of experimental results. At minimum, generate: (1) a comparison bar chart or line plot with error bars, and (2) a scalability or ablation visualization. Save all figures as both PDF (vector) and PNG (300 DPI) for use by the paper-writing stage.
+
 **Key Features**:
 - Automated baseline setup from Papers with Code
 - Systematic ablation study execution
@@ -472,7 +474,16 @@ Full System & 95.2 & - \\
 - vs Linformer: t=3.2, p=0.012, Cohen's d=0.8 (large effect)
 
 ### Scalability
-[Plot showing time/memory vs problem size]
+![Scalability Analysis](figures/scalability.png)
+
+### Result Distributions
+![Distribution](figures/distribution.png)
+
+## Generated Figures
+- `figures/comparison.pdf` — Performance comparison bar chart
+- `figures/scalability.pdf` — Time/memory vs problem size
+- `figures/ablation.pdf` — Component contribution analysis
+- `figures/distribution.pdf` — Result distributions across seeds
 
 ## Recommendations
 1. Use efficient attention (largest contributor)
@@ -546,8 +557,10 @@ Every evaluation must:
 - ✅ **≥3 seeds** per experiment (5 recommended)
 - ✅ **Statistical tests** (t-test or Mann-Whitney U)
 - ✅ **Effect sizes** reported (Cohen's d)
+- ✅ **Figures generated** (comparison plot + at least one of: scalability, ablation, distribution)
 - ✅ **Error bars** on all plots
 - ✅ **Significance levels** noted (*, **, ***)
+- ✅ **Dual format** figures saved (PDF vector + PNG 300 DPI)
 - ✅ **Reproducible configs** saved
 
 ---

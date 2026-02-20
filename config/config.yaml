@@ -7,20 +7,20 @@
 # LLM Configuration
 # =============================================================================
 
-# LLM model for agent execution (via OpenRouter or direct API)
-# Used by SkillClient for all node execution
-# Examples: anthropic/claude-haiku-4.5, openai/gpt-4o, google/gemini-2.5-pro
-llm_model: anthropic/claude-haiku-4.5
+# LLM model for agent execution (via Claude SDK)
+# Must use native Claude model IDs (not OpenRouter format)
+# Examples: claude-haiku-4-5-20251001, claude-sonnet-4-6, claude-opus-4-6
+llm_model: claude-haiku-4-5-20251001
 
-# LLM API base URL
+# LLM API base URL (used by LiteLLM for tree building/search)
 # Examples: https://openrouter.ai/api/v1, https://api.openai.com/v1
 llm_base_url: https://openrouter.ai/api/v1
 
-# Embedding model for vector search
+# Embedding model for vector search (OpenRouter format, used by LiteLLM)
 # Examples: openai/text-embedding-3-large, openai/text-embedding-3-small
 embedding_model: openai/text-embedding-3-large
 
-# Embedding API base URL
+# Embedding API base URL (used by LiteLLM)
 embedding_base_url: https://openrouter.ai/api/v1
 
 # =============================================================================

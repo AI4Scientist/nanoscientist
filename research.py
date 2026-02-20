@@ -107,7 +107,7 @@ def list_skills():
     console.print(table)
 
 
-async def run_research(task: str, skill_names: list[str], verbose: bool = False):
+async def run_research(task: str, skill_names: list[str], verbose: bool = False, node_timeout: float = None):
     """Run the research pipeline."""
     cfg = get_config()
 
@@ -119,6 +119,7 @@ async def run_research(task: str, skill_names: list[str], verbose: bool = False)
         skill_dir=str(SKILLS_DIR),
         workspace_dir="research_outputs",
         run_context=run_context,
+        node_timeout=node_timeout,
     )
 
     # Use rich visualizer for CLI output
@@ -162,6 +163,7 @@ Examples:
     parser.add_argument("--skills", "-s", help="Comma-separated list of skills (default: full pipeline)")
     parser.add_argument("--list-skills", action="store_true", help="List all available skills")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument("--node-timeout", type=float, metavar="SECONDS", help="Override per-node execution timeout (default: from config, 7200s)")
     parser.add_argument("--config", "-c", metavar="PATH", help="Path to config.yaml")
 
     args = parser.parse_args()
@@ -190,7 +192,7 @@ Examples:
     console.print(f"Skills: {', '.join(skill_names)}\n")
 
     try:
-        result = asyncio.run(run_research(args.task, skill_names, verbose=args.verbose))
+        result = asyncio.run(run_research(args.task, skill_names, verbose=args.verbose, node_timeout=args.node_timeout))
         sys.exit(0 if result.get("status") in ("completed", "partial") else 1)
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")

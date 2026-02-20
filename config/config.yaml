@@ -90,8 +90,8 @@ search_caching: true
 
 # Node execution timeout
 # (Max execution time for single skill node, in seconds)
-# 1800 = 30 minutes, suitable for complex tasks
-node_timeout: 1800.0
+# 7200 = 2 hours, accommodates complex tasks + API rate-limit wait time
+node_timeout: 7200.0
 
 # Max concurrent nodes
 # (Number of skill nodes executing simultaneously)

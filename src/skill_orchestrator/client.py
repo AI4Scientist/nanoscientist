@@ -1,8 +1,10 @@
 """Claude SDK Client wrapper - maintains session context."""
 
+import asyncio
 from pathlib import Path
 from typing import Optional, AsyncIterator, Callable
 
+from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeAgentOptions,
@@ -86,50 +88,63 @@ class SkillClient:
         self._log(f"Sending Query:\n{prompt}", "send")
 
         response_text = ""
-        await self.client.query(prompt, session_id=self.session_id)
-
-        async for message in self.client.receive_messages():
-            # Handle user messages (contain tool results)
-            if isinstance(message, UserMessage):
-                if isinstance(message.content, str):
-                    # String content is the user's query/prompt
-                    self._log(f"User Query: {message.content}", "send")
-                else:
-                    # List content contains tool results
-                    for block in message.content:
-                        if isinstance(block, ToolResultBlock):
-                            tool_id = getattr(block, 'tool_use_id', 'unknown')
-                            self._log(f"Tool Result ({tool_id}): {block.content}", "info")
-                        elif isinstance(block, TextBlock):
-                            self._log(f"User Text: {block.text}", "info")
+        max_retries = 5
+        for attempt in range(max_retries):
+            response_text = ""
+            await self.client.query(prompt, session_id=self.session_id)
+            try:
+                async for message in self.client.receive_messages():
+                    # Handle user messages (contain tool results)
+                    if isinstance(message, UserMessage):
+                        if isinstance(message.content, str):
+                            # String content is the user's query/prompt
+                            self._log(f"User Query: {message.content}", "send")
                         else:
-                            # Other block types
-                            block_type = type(block).__name__
-                            self._log(f"{block_type}: {block}", "info")
+                            # List content contains tool results
+                            for block in message.content:
+                                if isinstance(block, ToolResultBlock):
+                                    tool_id = getattr(block, 'tool_use_id', 'unknown')
+                                    self._log(f"Tool Result ({tool_id}): {block.content}", "info")
+                                elif isinstance(block, TextBlock):
+                                    self._log(f"User Text: {block.text}", "info")
+                                else:
+                                    # Other block types
+                                    block_type = type(block).__name__
+                                    self._log(f"{block_type}: {block}", "info")
 
-            # Handle assistant messages (contain tool calls and text)
-            elif isinstance(message, AssistantMessage):
-                if message.error:
-                    self._log(f"Assistant ERROR: {message.error}", "error")
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response_text += block.text
-                        # Log complete text (visualizer handles multi-line)
-                        self._log(block.text, "recv")
-                    elif isinstance(block, ToolUseBlock):
-                        # Log tool usage with full details
-                        self._log(f"Tool: {block.name}", "tool")
-                        self._log(f"  Input: {block.input}", "info")
+                    # Handle assistant messages (contain tool calls and text)
+                    elif isinstance(message, AssistantMessage):
+                        if message.error:
+                            self._log(f"Assistant ERROR: {message.error}", "error")
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                response_text += block.text
+                                # Log complete text (visualizer handles multi-line)
+                                self._log(block.text, "recv")
+                            elif isinstance(block, ToolUseBlock):
+                                # Log tool usage with full details
+                                self._log(f"Tool: {block.name}", "tool")
+                                self._log(f"  Input: {block.input}", "info")
 
-            elif isinstance(message, ResultMessage):
-                cost = getattr(message, 'total_cost_usd', 'N/A')
-                self._log(f"Execution completed (cost: ${cost})", "ok")
-                break  # End signal
+                    elif isinstance(message, ResultMessage):
+                        cost = getattr(message, 'total_cost_usd', 'N/A')
+                        self._log(f"Execution completed (cost: ${cost})", "ok")
+                        break  # End signal
 
-            else:
-                # Catch unknown message types
-                msg_type = type(message).__name__
-                self._log(f"Unknown message type: {msg_type} - {message}", "warn")
+                    else:
+                        # Catch unknown message types
+                        msg_type = type(message).__name__
+                        self._log(f"Unknown message type: {msg_type} - {message}", "warn")
+
+                break  # Success — exit retry loop
+
+            except MessageParseError as e:
+                if "rate_limit_event" in str(e) and attempt < max_retries - 1:
+                    wait_time = 60 * (attempt + 1)
+                    self._log(f"Rate limited (attempt {attempt + 1}/{max_retries}). Waiting {wait_time}s...", "warn")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
 
         return response_text
 
@@ -150,38 +165,51 @@ class SkillClient:
 
         response_text = ""
         metrics = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+        max_retries = 5
+        for attempt in range(max_retries):
+            response_text = ""
+            metrics = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+            await self.client.query(prompt, session_id=self.session_id)
+            try:
+                async for message in self.client.receive_messages():
+                    if isinstance(message, UserMessage):
+                        if isinstance(message.content, str):
+                            self._log(f"User Query: {message.content}", "send")
+                        else:
+                            for block in message.content:
+                                if isinstance(block, ToolResultBlock):
+                                    tool_id = getattr(block, 'tool_use_id', 'unknown')
+                                    self._log(f"Tool Result ({tool_id}): {block.content}", "info")
 
-        await self.client.query(prompt, session_id=self.session_id)
+                    elif isinstance(message, AssistantMessage):
+                        if message.error:
+                            self._log(f"Assistant ERROR: {message.error}", "error")
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                response_text += block.text
+                                self._log(block.text, "recv")
+                            elif isinstance(block, ToolUseBlock):
+                                self._log(f"Tool: {block.name}", "tool")
+                                self._log(f"  Input: {block.input}", "info")
 
-        async for message in self.client.receive_messages():
-            if isinstance(message, UserMessage):
-                if isinstance(message.content, str):
-                    self._log(f"User Query: {message.content}", "send")
+                    elif isinstance(message, ResultMessage):
+                        metrics["cost_usd"] = getattr(message, 'total_cost_usd', 0.0)
+                        usage = getattr(message, 'usage', None)
+                        if usage:
+                            metrics["input_tokens"] = usage.get('input_tokens', 0)
+                            metrics["output_tokens"] = usage.get('output_tokens', 0)
+                        self._log(f"Execution completed (cost: ${metrics['cost_usd']:.4f})", "ok")
+                        break
+
+                break  # Success — exit retry loop
+
+            except MessageParseError as e:
+                if "rate_limit_event" in str(e) and attempt < max_retries - 1:
+                    wait_time = 60 * (attempt + 1)
+                    self._log(f"Rate limited (attempt {attempt + 1}/{max_retries}). Waiting {wait_time}s...", "warn")
+                    await asyncio.sleep(wait_time)
                 else:
-                    for block in message.content:
-                        if isinstance(block, ToolResultBlock):
-                            tool_id = getattr(block, 'tool_use_id', 'unknown')
-                            self._log(f"Tool Result ({tool_id}): {block.content}", "info")
-
-            elif isinstance(message, AssistantMessage):
-                if message.error:
-                    self._log(f"Assistant ERROR: {message.error}", "error")
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response_text += block.text
-                        self._log(block.text, "recv")
-                    elif isinstance(block, ToolUseBlock):
-                        self._log(f"Tool: {block.name}", "tool")
-                        self._log(f"  Input: {block.input}", "info")
-
-            elif isinstance(message, ResultMessage):
-                metrics["cost_usd"] = getattr(message, 'total_cost_usd', 0.0)
-                usage = getattr(message, 'usage', None)
-                if usage:
-                    metrics["input_tokens"] = usage.get('input_tokens', 0)
-                    metrics["output_tokens"] = usage.get('output_tokens', 0)
-                self._log(f"Execution completed (cost: ${metrics['cost_usd']:.4f})", "ok")
-                break
+                    raise
 
         return response_text, metrics
 

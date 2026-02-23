@@ -1,0 +1,4 @@
+openai>=1.0
+pocketflow>=0.0.1
+python-dotenv>=1.0
+pyyaml>=6.0

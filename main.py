@@ -9,14 +9,12 @@ Usage:
 
 import argparse
 import sys
-from pathlib import Path
 
 # Resolve project paths
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SKILLS_DIR = PROJECT_ROOT / "skills"
+SKILLS_DIR = "skills"
 
-from utils import load_skill_index
-from flow import create_scientist_flow
+from src.utils import load_skill_index
+from src.flow import create_scientist_flow
 
 
 def list_skills():

@@ -5,11 +5,9 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "PocketFlow"))
 from pocketflow import Node
 
-from utils import (
+from .utils import (
     call_llm,
     format_skill_index,
     load_skill_content,

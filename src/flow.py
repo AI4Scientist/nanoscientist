@@ -9,6 +9,7 @@ from .nodes import (
     WriteTeX,
     CompileTeX,
     FixTeX,
+    Finisher,
 )
 
 
@@ -28,6 +29,7 @@ def create_scientist_flow() -> Flow:
     write_tex     = WriteTeX(max_retries=2, wait=3)
     compile_tex   = CompileTeX(max_retries=1, wait=0)
     fix_tex       = FixTeX(max_retries=2, wait=3)
+    finisher      = Finisher()
 
     # Agent loop
     planner - "execute"       >> decide
@@ -38,7 +40,8 @@ def create_scientist_flow() -> Flow:
     # Compile & fix loop
     write_tex   - "compile" >> compile_tex
     compile_tex - "fix"     >> fix_tex
+    compile_tex - "done"    >> finisher
     fix_tex     - "compile" >> compile_tex
-    # compile_tex returning "done" has no successor → flow ends
+    fix_tex     - "done"    >> finisher
 
     return Flow(start=planner)

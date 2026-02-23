@@ -477,25 +477,14 @@ class CompileTeX(Node):
             print(f"[CompileTeX] pdflatex not installed — skipping PDF compilation.")
             print(f"[CompileTeX] LaTeX source ready at: {shared['output_path']}/report.tex")
             print(f"[CompileTeX] To compile manually: cd {shared['output_path']} && pdflatex report.tex && bibtex report && pdflatex report.tex && pdflatex report.tex")
-            self._print_cost_summary(shared)
             return "done"
         if success:
             print(f"[CompileTeX] PDF compiled successfully: {shared['output_path']}/report.pdf")
-            self._print_cost_summary(shared)
             return "done"
         else:
             shared["compile_errors"] = log
             print("[CompileTeX] Compilation failed, attempting fix...")
             return "fix"
-
-    def _print_cost_summary(self, shared):
-        total = sum(entry["cost"] for entry in shared.get("cost_log", []))
-        print(f"\n{'='*50}")
-        print(f"Research complete!")
-        print(f"Total cost: ${total:.4f}")
-        print(f"Budget used: ${total:.4f} / ${shared['budget_dollars']:.2f}")
-        print(f"Output: {shared['output_path']}/report.pdf")
-        print(f"{'='*50}")
 
 
 # ===================================================================
@@ -547,9 +536,6 @@ class FixTeX(Node):
         if text is None:
             # Max attempts reached
             print(f"[FixTeX] Max fix attempts reached. Output may have compilation warnings.")
-            total = sum(entry["cost"] for entry in shared.get("cost_log", []))
-            print(f"\nTotal cost: ${total:.4f}")
-            print(f"Output: {shared['output_path']}/")
             return "done"
 
         track_cost(shared, f"fix_tex:{shared['fix_attempts']}", usage)
@@ -567,3 +553,25 @@ class FixTeX(Node):
 
         print(f"[FixTeX] Applied fix (attempt {shared['fix_attempts']})")
         return "compile"
+
+
+# ===================================================================
+# 7. Finisher — terminal node (no successors → flow ends cleanly)
+# ===================================================================
+class Finisher(Node):
+    """Print cost summary and end the flow."""
+
+    def prep(self, shared):
+        return shared
+
+    def exec(self, prep_res):
+        return None
+
+    def post(self, shared, prep_res, exec_res):
+        total = sum(entry["cost"] for entry in shared.get("cost_log", []))
+        print(f"\n{'='*50}")
+        print(f"Research complete!")
+        print(f"Total cost: ${total:.4f}")
+        print(f"Budget used: ${total:.4f} / ${shared['budget_dollars']:.2f}")
+        print(f"Output: {shared['output_path']}/")
+        print(f"{'='*50}")

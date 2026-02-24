@@ -8,8 +8,18 @@ from pathlib import Path
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# Load .env from project root
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+def init_env(env_path: str = None):
+    """Load environment variables from the specified .env file.
+
+    If no path given, defaults to .env in the project root.
+    """
+    if env_path is None:
+        env_path = str(Path(__file__).resolve().parents[1] / ".env")
+    path = Path(env_path)
+    if not path.exists():
+        raise FileNotFoundError(f".env file not found: {path}")
+    load_dotenv(path, override=True)
 
 # --- LLM Configuration ---
 MODEL = "minimax/minimax-m2.5"

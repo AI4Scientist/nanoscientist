@@ -559,6 +559,7 @@ class CompileTeX(Node):
                 cwd=out_dir,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=60,
             )
             all_output.append(result.stdout + result.stderr)

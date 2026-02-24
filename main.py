@@ -2,20 +2,20 @@
 """Autonomous Scientist — budget-aware research agent.
 
 Usage:
-    python main.py "Your research topic" --budget 1.00
-    python main.py "Quick question" --budget 0.05
+    python main.py "Your research topic" --budget 0.05 --env .env.prod
+    python main.py topic.md --budget 1.00
     python main.py --list-skills
 """
 
 import argparse
 import sys
 
-# Resolve project paths
-SKILLS_DIR = "skills"
-
-from src.utils import load_skill_index, load_quality_standard
+from pathlib import Path
+from src.utils import init_env, load_skill_index, load_quality_standard
 from src.flow import create_scientist_flow
 
+# Resolve project paths
+SKILLS_DIR = "skills"
 
 def list_skills():
     """Print available skills (from skills.json index)."""
@@ -73,13 +73,17 @@ def main():
 Examples:
   python main.py "What are CRISPR off-target effects?" --budget 1.00
   python main.py "Latest in quantum error correction" --budget 0.05
+  python main.py topic.md --budget 1.00
   python main.py --list-skills
         """,
     )
-    parser.add_argument("topic", nargs="?", help="Research topic or question")
     parser.add_argument(
-        "--budget", "-b", type=float, default=0.50,
-        help="Budget in USD for LLM inference (default: $0.50)",
+        "topic", nargs="?",
+        help="Research topic string OR path to a YAML plan file",
+    )
+    parser.add_argument(
+        "--budget", "-b", type=float, default=1.0,
+        help="Budget in USD for LLM inference (default: $1.00)",
     )
     parser.add_argument(
         "--output", "-o", default="outputs",
@@ -88,8 +92,15 @@ Examples:
     parser.add_argument(
         "--list-skills", action="store_true", help="List available skills",
     )
+    parser.add_argument(
+        "--env", "-e", default=".env",
+        help="Path to .env file for API keys (default: .env)",
+    )
 
     args = parser.parse_args()
+
+    # Load environment variables before anything else
+    init_env(args.env)
 
     if args.list_skills:
         list_skills()
@@ -100,7 +111,15 @@ Examples:
         sys.exit(1)
 
     try:
-        shared = run(args.topic, args.budget, args.output)
+        # Detect file mode: if topic argument is a path to an existing file,
+        # read its content as the research topic
+        topic = args.topic
+        topic_path = Path(args.topic)
+        if topic_path.exists() and topic_path.is_file():
+            topic = topic_path.read_text(encoding="utf-8").strip()
+            print(f"Loaded research topic from {args.topic}")
+
+        shared = run(topic, args.budget, args.output)
         # Exit 0 if we got output
         if shared.get("output_path"):
             sys.exit(0)

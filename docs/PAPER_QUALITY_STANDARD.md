@@ -97,7 +97,8 @@ Every report **must** contain these sections in order:
 
 | Section | When to include |
 |---------|-----------------|
-| **Figures / Tables** | When data, architecture, or processes benefit from visual representation. Every figure must have a detailed, self-contained caption. |
+| **Figures / Tables** | **Strongly preferred.** Include whenever possible — visual presentation significantly improves clarity and reviewer perception. See Section 3.4 for detailed guidance. |
+| **Mathematical Formulation** | **Preferred for technical topics.** Use equations to formalize key concepts, algorithms, loss functions, or theoretical claims. See Section 3.5 for guidance. |
 | **Limitations** | Always encouraged. A dedicated subsection of Discussion or standalone. Missing this section is grounds for desk rejection at ACL. |
 | **Broader Impact** | When the topic has societal implications. Required at NeurIPS. Discuss both positive and negative impacts. |
 | **Appendix** | For proofs, extended results, hyperparameter tables, or supplementary details that would interrupt flow. |
@@ -111,7 +112,74 @@ The agent adapts report depth to the budget:
 | **Quick Summary** | < $0.10 | Title, Abstract, Introduction, Background, Conclusion, References |
 | **Literature Review** | $0.10-$0.50 | All mandatory except Methods and Results |
 | **Research Report** | $0.50-$2.00 | All mandatory sections + Limitations |
-| **Full Paper** | $2.00+ | All mandatory + Figures/Tables + Limitations + Broader Impact + Appendix |
+| **Full Paper** | $2.00+ | All mandatory + Figures/Tables + Formulas + Limitations + Broader Impact + Appendix |
+
+### 3.4 Figures and Visual Elements
+
+**Figures are strongly preferred in all report types** (budget permitting). A paper
+with well-designed figures is significantly more readable and receives higher
+reviewer scores. Prefer generating figures over omitting them.
+
+#### Figure Types and When to Use Them
+
+| Figure Type | When to use | How to generate |
+|-------------|-------------|-----------------|
+| **Architecture / System diagram** | When describing a model, framework, or pipeline | TikZ in LaTeX, or generate via Python (matplotlib/graphviz) and include as PDF/PNG |
+| **Workflow / Process diagram** | When describing a multi-step method or algorithm | TikZ flowcharts or Python-generated diagrams |
+| **Results plots** | When presenting quantitative comparisons | Python script (matplotlib/seaborn): bar charts, line plots, scatter plots |
+| **Ablation / Sensitivity plots** | When showing how components or hyperparameters affect performance | Python script: grouped bar charts or heatmaps |
+| **Comparison tables** | When comparing multiple methods across multiple metrics | LaTeX `tabular` with `booktabs` |
+| **Conceptual illustration** | When explaining an abstract concept visually | TikZ or descriptive figure with annotations |
+
+#### Figure Quality Requirements
+
+- **Every figure must be referenced** in the text (`Figure~\ref{fig:xxx}` or `Table~\ref{tab:xxx}`).
+- **Self-contained captions**: A reader should understand the figure without reading the body text.
+- **Consistent style**: Use the same color palette, font sizes, and line widths across all figures.
+- **Vector format preferred**: Use PDF or TikZ for diagrams (not rasterized PNG unless generated from data).
+- **Legible at print size**: Labels, axis ticks, and legends must be readable when printed.
+
+#### Generation Methods (in order of preference)
+
+1. **Python script** — Preferred for all figures: data-driven plots, architecture diagrams,
+   workflow diagrams. Use matplotlib, seaborn, or graphviz. Save as PDF/PNG, include via
+   `\includegraphics{}`.
+2. **TikZ/pgfplots in LaTeX** — Alternative for simple diagrams and flowcharts.
+   Compiles directly with `pdflatex`, no external dependencies.
+
+### 3.5 Mathematical Formulation
+
+**Formulas are preferred for technical topics.** Mathematical notation provides
+precision that prose cannot achieve. Use equations to formalize:
+
+- **Problem definitions**: Objective functions, optimization problems, constraints
+- **Algorithms**: Key update rules, loss functions, gradient computations
+- **Theoretical claims**: Bounds, complexity results, convergence guarantees
+- **Model descriptions**: Architecture components, attention mechanisms, feature transforms
+
+#### Formula Quality Requirements
+
+| Rule | Example |
+|------|---------|
+| **Number important equations** | Use `\begin{equation}` with `\label{eq:xxx}` for equations referenced later |
+| **Inline for simple expressions** | Use `$x \in \mathbb{R}^d$` for inline math |
+| **Define all notation** | Introduce every variable before or immediately after the equation |
+| **Consistent notation** | Same symbol means the same thing throughout the paper |
+| **Align multi-line derivations** | Use `\begin{align}` for step-by-step derivations |
+| **Do not overuse** | Formalize key concepts; do not convert every sentence to math |
+
+#### When Formulas Are Essential
+
+- Any paper involving **optimization, loss functions, or training objectives**
+- Any paper describing **algorithms** (pseudocode + formal definition)
+- Any paper making **theoretical claims** (state theorems formally)
+- Any paper on **architectures** (formalize layer computations)
+
+#### When Formulas Are Optional
+
+- Pure literature reviews (but formalizing key concepts from reviewed papers is still good)
+- Application papers focused on empirical results
+- Survey papers (but include formulas from the surveyed methods)
 
 ---
 
@@ -399,6 +467,14 @@ Before finalizing, the agent should verify every item.
 - [ ] Limitations are honestly acknowledged (scope, assumptions, failure modes)
 - [ ] Conclusion does not repeat the abstract; states field advancement
 
+### Figures and Formulas
+- [ ] At least one figure or table included (architecture, workflow, or results)
+- [ ] All figures and tables referenced in text with self-contained captions
+- [ ] Figures use consistent style (colors, fonts, line widths)
+- [ ] Key concepts formalized with equations where appropriate
+- [ ] All notation defined before or immediately after equations
+- [ ] Important equations numbered and labeled for cross-reference
+
 ### Writing Quality
 - [ ] First sentence is specific and compelling, not generic
 - [ ] Narrative follows claim-evidence-commentary pattern
@@ -406,7 +482,6 @@ Before finalizing, the agent should verify every item.
 - [ ] Formal academic tone throughout; active voice preferred
 - [ ] Technical terms defined on first use
 - [ ] Consistent notation and terminology
-- [ ] All figures and tables referenced in text with self-contained captions
 - [ ] No overclaiming or speculation presented as fact
 
 ### Technical Compliance

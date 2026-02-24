@@ -1,31 +1,76 @@
 ---
 name: github-mining
-description: "Mine GitHub repositories using the REST API for empirical software engineering research. Collect commits, issues, pull requests, contributors, file trees, and repository statistics. Supports pagination, rate-limit handling, and structured data collection for quantitative and qualitative analysis of open-source projects."
+description: "Mine GitHub repositories using the GraphQL API (v4) for empirical software engineering research. Collect commits, issues, pull requests, contributors, and repository statistics in fewer API calls with precise field selection. Falls back to REST API for statistics endpoints. Supports cursor-based pagination, rate-limit handling, and structured data collection."
 allowed-tools: [Read, Write, Edit, Bash]
 license: MIT license
 metadata:
     skill-author: K-Dense Inc.
 ---
 
-# GitHub Data Mining via REST API
+# GitHub Data Mining via GraphQL API
 
 ## Overview
 
-This skill enables systematic collection and analysis of GitHub repository data through the REST API for empirical research purposes. It provides structured methods for extracting commits, issues, pull requests, contributor activity, repository structure, and statistics — the building blocks for empirical software engineering studies, ecosystem analysis, and open-source community research.
+This skill enables systematic collection and analysis of GitHub repository data through the **GraphQL API (v4)** for empirical research purposes. GraphQL is the primary interface — it fetches exactly the fields you need in a single request, batches multiple repositories via aliases, and uses cursor-based pagination. The REST API is used only for endpoints not available in GraphQL (repository statistics, file trees).
 
-**Critical Principle:** All data collection must respect GitHub API rate limits and use authenticated requests with a `GITHUB_TOKEN` for higher throughput (5,000 requests/hour vs 60 unauthenticated). Always implement pagination to retrieve complete datasets, and use exponential backoff when approaching rate limits.
+**Why GraphQL over REST?**
+
+| Concern | REST v3 | GraphQL v4 |
+|---------|---------|------------|
+| Requests per repo overview | 5-7 separate calls | **1 call** (nested query) |
+| Data fetching | Fixed response shape, over-fetches | Fetch **exactly** what you need |
+| Batching repos | 1 request per repo | **N repos in 1 request** (aliases) |
+| Pagination | Offset-based (`page=N`) | **Cursor-based** (`after: $endCursor`) |
+| Nested data | Impossible (separate calls for PR files, comments) | **One query** fetches PR + files + reviews |
+| Point cost | 1 per GET, 5 per POST | **1 per query** (no mutations needed) |
+
+**Critical Principle:** All data collection must respect GitHub API rate limits and use authenticated requests with a `GITHUB_TOKEN` (5,000 points/hour). Always paginate with cursors to retrieve complete datasets, and include `rateLimit` in every query to monitor budget.
+
+### GraphQL vs REST Coverage Matrix
+
+Not everything is available in GraphQL. This matrix shows which API to use for each data type:
+
+| Data Type | GraphQL | REST | Notes |
+|-----------|---------|------|-------|
+| **Repository metadata** (stars, forks, description, topics, license) | Yes | Yes | GraphQL fetches all in 1 query |
+| **Languages** (byte counts per language) | Yes | Yes | `languages` connection |
+| **README / file contents** | Yes | Yes | `object(expression: "HEAD:path")` returns `Blob.text` |
+| **Commit history** (author, date, message) | Yes | Yes | `history` connection with `since`/`until`/`path` filters |
+| **Commit diff stats** (additions/deletions per commit) | Yes | Yes | Inline on each commit node |
+| **Full commit diff/patch content** (per-file patches) | **No** | Yes | REST only: `GET /commits/{sha}` with `files[].patch` |
+| **Issues** (with labels, assignees, inline comments) | Yes | Yes | GraphQL returns only issues (not PRs mixed in) |
+| **Pull requests** (with files, reviews, inline comments) | Yes | Yes | Nested `files`, `reviews` in one query |
+| **Git blame** | Yes | Yes | `Blame` object with `ranges` |
+| **Repository forks list** | Yes | Yes | `forks` connection |
+| **Stargazers with timestamps** | Yes | Yes | `stargazers.edges[].starredAt` |
+| **Release assets** (download counts, URLs) | Yes | Yes | `ReleaseAsset` object |
+| **Deployments** | Yes | Yes | `deployments` connection |
+| **Dependabot alerts** | Yes | Yes | `vulnerabilityAlerts` connection; REST has more filters |
+| **Collaborators with permissions** | Yes | Yes | `collaborators` connection with `permission` edge field |
+| **Code of conduct / contributing guidelines** | Yes | Yes | `codeOfConduct`, `contributingGuidelines` fields |
+| **Commit comments** | Yes | Yes | `commitComments` connection |
+| **Filter commits by file path** | Yes | Yes | `history(path: "src/...")` argument |
+| **Recursive file tree** (single call) | **No** | Yes | REST `GET /git/trees/{sha}?recursive=1`; GraphQL needs N+1 queries per depth |
+| **Repository statistics** (commit_activity, code_frequency, participation, punch_card) | **No** | Yes | REST-only `/stats/*` endpoints |
+| **Traffic data** (views, clones, referrers, paths) | **No** | Yes | REST-only; requires push access |
+| **Actions workflows** (list, enable, disable, logs, artifacts, runners) | **Partial** | Yes | GraphQL only via `CheckSuite` link; REST has full CRUD |
+| **Code scanning alerts** | **No** | Yes | REST-only |
+| **Webhooks** (CRUD) | **No** | Yes | REST-only |
+| **Community health score** (composite percentage) | **No** | Yes | REST `GET /community/profile`; individual files available in GraphQL |
+
+**Rule of thumb**: Use GraphQL for repositories, commits, issues, PRs, and search. Fall back to REST for statistics, traffic, recursive file trees, Actions workflows, and security alerts.
 
 ## When to Use This Skill
 
 Use this skill when you need:
 
-- **Repository Mining**: Collect commit history, file trees, contributor lists, and language breakdowns from GitHub repositories
-- **Issue & PR Analysis**: Extract issues, pull requests, comments, labels, and review data for empirical analysis
+- **Repository Mining**: Collect commit history, contributor lists, language breakdowns, README content, and topics — all in a single GraphQL query
+- **Issue & PR Analysis**: Extract issues, pull requests, labels, reviews, and comments with nested queries
 - **Contributor Studies**: Analyze contributor patterns, tenure, activity frequency, and collaboration networks
-- **Ecosystem Research**: Study open-source project evolution, growth trajectories, and community dynamics
-- **Coverage/Structure Mapping**: Map directory structures to domain categories (e.g., mathematical modules in Mathlib)
+- **Ecosystem Research**: Search and compare repositories by topic, language, and stars across the GitHub ecosystem
+- **Cross-Repository Comparison**: Batch multiple repository queries using GraphQL aliases
 - **Time-Series Analysis**: Track project metrics over time (commits/month, PR merge rates, issue volumes)
-- **Search-Based Studies**: Find repositories, code patterns, or issues matching specific criteria across GitHub
+- **Search-Based Studies**: Find repositories, issues, or code matching complex criteria
 
 ## Visual Enhancement with Scientific Schematics
 
@@ -41,376 +86,713 @@ If your document does not already contain schematics or diagrams:
 - Contributor network visualizations
 - Repository growth trajectory charts
 - Issue/PR lifecycle state diagrams
-- Directory-to-domain mapping diagrams
 
 For detailed guidance on creating schematics, refer to the scientific-schematics skill documentation.
 
 ---
 
-## Core Capabilities
+## API Endpoint and Authentication
 
-### 1. Repository Metadata Collection
-
-Retrieve comprehensive repository information including stars, forks, language, license, creation date, and description.
-
-**Endpoint**: `GET /repos/{owner}/{repo}`
-
-```bash
-curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  -H "X-GitHub-Api-Version: 2022-11-28" \
-  "https://api.github.com/repos/{owner}/{repo}"
+**Single endpoint** (always POST):
+```
+https://api.github.com/graphql
 ```
 
-**Key fields returned**: `full_name`, `description`, `stargazers_count`, `forks_count`, `open_issues_count`, `language`, `license`, `created_at`, `updated_at`, `pushed_at`, `size`, `default_branch`, `topics`.
+**Authentication** — Bearer token in `Authorization` header:
+```bash
+curl -H "Authorization: bearer $GITHUB_TOKEN" \
+     -H "Content-Type: application/json" \
+     -X POST -d '{"query": "{ viewer { login } }"}' \
+     https://api.github.com/graphql
+```
+
+**Using `gh` CLI** (handles auth automatically):
+```bash
+gh api graphql -f query='{ viewer { login } }'
+```
+
+---
+
+## Core Capabilities
+
+### 1. Repository Metadata (Single Query)
+
+Fetch comprehensive repository info including stars, forks, languages, topics, license, and README — all in one request.
+
+```graphql
+query GetRepository($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    description
+    url
+    homepageUrl
+    stargazerCount
+    forkCount
+    watchers { totalCount }
+    isArchived
+    isFork
+    createdAt
+    updatedAt
+    pushedAt
+    diskUsage
+    primaryLanguage { name color }
+    languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
+      totalSize
+      edges { size node { name color } }
+    }
+    repositoryTopics(first: 20) {
+      nodes { topic { name } }
+    }
+    licenseInfo { name spdxId }
+    defaultBranchRef { name }
+    # README content inline
+    readme: object(expression: "HEAD:README.md") {
+      ... on Blob { text byteSize }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+```
+
+**`gh` CLI usage:**
+```bash
+gh api graphql -F owner="pytorch" -F name="pytorch" -f query='
+  query($owner: String!, $name: String!) {
+    repository(owner: $owner, name: $name) {
+      nameWithOwner description stargazerCount forkCount
+      primaryLanguage { name }
+      licenseInfo { spdxId }
+      repositoryTopics(first: 20) { nodes { topic { name } } }
+      readme: object(expression: "HEAD:README.md") {
+        ... on Blob { text }
+      }
+    }
+  }
+'
+```
+
+**Equivalent REST calls replaced**: `GET /repos`, `GET /repos/topics`, `GET /repos/languages`, `GET /repos/readme` — **4 calls → 1 query**.
 
 ### 2. Commit History Mining
 
-Collect full commit history with author, date, message, and file-change metadata.
+Collect commit history with author, date, message, and diff stats via cursor pagination.
 
-**Endpoint**: `GET /repos/{owner}/{repo}/commits`
-
-**Key parameters**:
-- `sha` — Branch name or commit SHA to start from
-- `since` / `until` — ISO 8601 timestamps for date range filtering
-- `author` — GitHub username or email to filter by author
-- `path` — Filter commits touching a specific file/directory
-- `per_page` — Up to 100 results per page (default: 30)
-- `page` — Page number for pagination
-
-```bash
-# Fetch commits in a date range, 100 per page
-curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/{owner}/{repo}/commits?since=2023-01-01T00:00:00Z&until=2024-01-01T00:00:00Z&per_page=100&page=1"
+```graphql
+query GetCommits($owner: String!, $name: String!, $cursor: String, $since: GitTimestamp) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef {
+      target {
+        ... on Commit {
+          history(first: 100, after: $cursor, since: $since) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              oid
+              messageHeadline
+              message
+              committedDate
+              additions
+              deletions
+              changedFilesIfAvailable
+              author {
+                name
+                email
+                user { login }
+              }
+              parents(first: 2) { totalCount }
+            }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
 ```
 
-**Data extractable per commit**: `sha`, `commit.message`, `commit.author.name`, `commit.author.email`, `commit.author.date`, `commit.committer.date`, `author.login` (GitHub username), `parents` (for merge detection), `stats` (additions/deletions — requires per-commit GET).
+**Variables:**
+```json
+{
+  "owner": "pytorch",
+  "name": "pytorch",
+  "cursor": null,
+  "since": "2024-01-01T00:00:00Z"
+}
+```
+
+**Key advantages**:
+- Each commit node includes `additions`, `deletions`, and `changedFilesIfAvailable` directly — REST requires a separate `GET /repos/{owner}/{repo}/commits/{sha}` per commit to get diff stats
+- Path filtering is supported: add `path: "src/models/"` to `history()` to get only commits touching that path
+- **Limitation**: Full per-file diff/patch content is NOT available in GraphQL — use REST `GET /commits/{sha}` for `files[].patch`
+
+**`gh` CLI with auto-pagination:**
+```bash
+gh api graphql --paginate -F owner="pytorch" -F name="pytorch" -f query='
+  query($owner: String!, $name: String!, $endCursor: String) {
+    repository(owner: $owner, name: $name) {
+      defaultBranchRef {
+        target {
+          ... on Commit {
+            history(first: 100, after: $endCursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                oid messageHeadline committedDate
+                author { name user { login } }
+                additions deletions
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+'
+```
+
+**Important**: For `gh --paginate` to work, the cursor variable **must** be named `$endCursor` and the query must include `pageInfo { hasNextPage endCursor }`.
 
 ### 3. Issue Mining
 
-Collect issues with their labels, state, creator, assignees, comments, and timestamps.
+Collect issues with labels, state, creator, assignees, comments, and reactions.
 
-**Endpoint**: `GET /repos/{owner}/{repo}/issues`
-
-**Key parameters**:
-- `state` — `open`, `closed`, or `all`
-- `labels` — Comma-separated label names
-- `sort` — `created`, `updated`, or `comments`
-- `direction` — `asc` or `desc`
-- `since` — ISO 8601 timestamp (filters by last update)
-- `creator` — Filter by issue author username
-- `milestone` — Milestone number, `*` (any), or `none`
-- `per_page` / `page` — Pagination (max 100 per page)
-
-**Important**: This endpoint returns both issues AND pull requests. Filter by checking that `pull_request` key is absent for pure issues.
-
-```bash
-# Fetch all closed issues, sorted by creation date
-curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/{owner}/{repo}/issues?state=all&per_page=100&page=1"
+```graphql
+query GetIssues($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, after: $cursor, states: [OPEN, CLOSED],
+           orderBy: {field: CREATED_AT, direction: DESC}) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        title
+        body
+        state
+        createdAt
+        updatedAt
+        closedAt
+        url
+        author { login }
+        labels(first: 10) { nodes { name color } }
+        assignees(first: 5) { nodes { login } }
+        comments(first: 10) {
+          totalCount
+          nodes {
+            body
+            createdAt
+            author { login }
+          }
+        }
+        reactions { totalCount }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
 ```
 
-**Issue comments endpoint**: `GET /repos/{owner}/{repo}/issues/{issue_number}/comments`
+**Key advantage**: Comments are fetched **inline** with each issue — no need for separate `GET /repos/{owner}/{repo}/issues/{n}/comments` calls. For issues with many comments, paginate the `comments` connection separately.
 
 ### 4. Pull Request Mining
 
-Collect PRs with their state, merge status, reviewers, changed files, and review comments.
+Collect PRs with state, merge status, reviewers, file changes, and review comments.
 
-**Endpoint**: `GET /repos/{owner}/{repo}/pulls`
-
-**Key parameters**:
-- `state` — `open`, `closed`, or `all`
-- `sort` — `created`, `updated`, `popularity`, `long-running`
-- `direction` — `asc` or `desc`
-- `head` — Filter by head branch (`user:branch-name`)
-- `base` — Filter by base branch
-- `per_page` / `page` — Pagination (max 100 per page)
-
-**Sub-endpoints per PR**:
-- `GET /repos/{owner}/{repo}/pulls/{pull_number}/commits` — Commits in the PR
-- `GET /repos/{owner}/{repo}/pulls/{pull_number}/files` — Changed files with diffs
-- `GET /repos/{owner}/{repo}/pulls/{pull_number}/comments` — Review comments
-
-```bash
-# Fetch all PRs (open + closed + merged)
-curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/{owner}/{repo}/pulls?state=all&per_page=100&page=1"
+```graphql
+query GetPullRequests($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: 100, after: $cursor, states: [OPEN, CLOSED, MERGED],
+                 orderBy: {field: CREATED_AT, direction: DESC}) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        title
+        body
+        state
+        isDraft
+        createdAt
+        updatedAt
+        mergedAt
+        closedAt
+        url
+        author { login }
+        mergedBy { login }
+        additions
+        deletions
+        changedFiles
+        labels(first: 10) { nodes { name color } }
+        reviews(first: 5) {
+          totalCount
+          nodes {
+            state
+            author { login }
+            submittedAt
+          }
+        }
+        comments { totalCount }
+        commits { totalCount }
+        files(first: 50) {
+          nodes { path additions deletions }
+        }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
 ```
 
-**Key fields**: `number`, `title`, `state`, `created_at`, `updated_at`, `closed_at`, `merged_at`, `user.login`, `labels`, `requested_reviewers`, `additions`, `deletions`, `changed_files`, `mergeable`, `merged_by`.
+**Key advantage**: PR metadata, files changed, and review data come back in **one query**. REST requires 3 separate paginated calls per PR (`/pulls/{n}`, `/pulls/{n}/files`, `/pulls/{n}/reviews`).
 
-### 5. Contributor Analysis
+### 5. Repository Search
 
-Retrieve contributor lists with commit counts and detailed weekly statistics.
+Find repositories by topic, language, stars, and activity — using GitHub's full search syntax.
 
-**Endpoints**:
-- `GET /repos/{owner}/{repo}/contributors` — List contributors sorted by commit count
-- `GET /repos/{owner}/{repo}/stats/contributors` — Detailed weekly addition/deletion/commit stats per contributor
-
-```bash
-# List all contributors with commit counts
-curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/{owner}/{repo}/contributors?per_page=100&page=1"
+```graphql
+query SearchRepositories($query: String!, $cursor: String) {
+  search(query: $query, type: REPOSITORY, first: 100, after: $cursor) {
+    repositoryCount
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on Repository {
+        nameWithOwner
+        description
+        url
+        stargazerCount
+        forkCount
+        createdAt
+        updatedAt
+        pushedAt
+        primaryLanguage { name }
+        licenseInfo { spdxId }
+        repositoryTopics(first: 10) {
+          nodes { topic { name } }
+        }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
 ```
 
-**Stats endpoint returns per contributor**: `author` (login, id, avatar), `total` (total commits), `weeks[]` (array of `{w: unix_timestamp, a: additions, d: deletions, c: commits}`).
+**Search query syntax** (passed as the `$query` variable):
+```
+topic:machine-learning language:python stars:>=500 sort:stars-desc
+topic:nanoscience stars:>=10 pushed:>2024-01-01
+language:rust stars:500..5000 sort:updated-desc
+topic:bioinformatics language:python forks:>=50
+```
 
-**Caching note**: Stats endpoints may return `202 Accepted` while GitHub computes results. Retry after 2-3 seconds. For repositories with 10,000+ commits, addition/deletion counts may return 0.
+**`gh` CLI with auto-pagination and jq filtering:**
+```bash
+gh api graphql --paginate -f query='
+  query($endCursor: String) {
+    search(query: "topic:machine-learning language:python stars:>=500",
+           type: REPOSITORY, first: 100, after: $endCursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        ... on Repository {
+          nameWithOwner stargazerCount description
+        }
+      }
+    }
+  }
+' --jq '.data.search.nodes[] | [.nameWithOwner, .stargazerCount] | @tsv'
+```
 
-### 6. Repository File Tree
+**Constraint**: Search returns a maximum of **1,000 total results** regardless of pagination. Use date-range partitioning for larger datasets.
 
-Map the complete directory structure of a repository for module-level analysis.
+### 6. Batch Multiple Repositories (Aliases)
 
-**Endpoint**: `GET /repos/{owner}/{repo}/git/trees/{tree_sha}?recursive=1`
+Query multiple repositories in a single request using GraphQL aliases:
+
+```graphql
+query BatchRepos {
+  pytorch: repository(owner: "pytorch", name: "pytorch") {
+    ...RepoFields
+  }
+  tensorflow: repository(owner: "tensorflow", name: "tensorflow") {
+    ...RepoFields
+  }
+  transformers: repository(owner: "huggingface", name: "transformers") {
+    ...RepoFields
+  }
+  rateLimit { remaining cost resetAt }
+}
+
+fragment RepoFields on Repository {
+  nameWithOwner
+  stargazerCount
+  forkCount
+  description
+  primaryLanguage { name }
+  licenseInfo { spdxId }
+  repositoryTopics(first: 10) {
+    nodes { topic { name } }
+  }
+  defaultBranchRef {
+    target {
+      ... on Commit {
+        history(first: 1) { totalCount }
+      }
+    }
+  }
+  issues(states: [OPEN, CLOSED]) { totalCount }
+  pullRequests(states: [OPEN, CLOSED, MERGED]) { totalCount }
+}
+```
+
+**REST equivalent**: 3 repos x (metadata + topics + languages + commit count + issue count + PR count) = **18+ requests → 1 query**.
+
+### 7. Contributor Analysis
+
+GraphQL doesn't have a direct `/contributors` equivalent, but you can extract contributors from commit history:
+
+```graphql
+query ContributorCommits($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef {
+      target {
+        ... on Commit {
+          history(first: 100, after: $cursor) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              author {
+                name
+                email
+                user { login avatarUrl }
+              }
+              committedDate
+              additions
+              deletions
+            }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+```
+
+For **detailed weekly contributor statistics**, fall back to REST:
+```bash
+curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+  "https://api.github.com/repos/{owner}/{repo}/stats/contributors"
+```
+
+### 8. Repository File Tree (REST Only)
+
+The recursive file tree endpoint is REST-only:
 
 ```bash
-# Get full recursive file tree of default branch
 curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
   -H "Accept: application/vnd.github+json" \
   "https://api.github.com/repos/{owner}/{repo}/git/trees/main?recursive=1"
 ```
 
-**Returns**: Array of tree entries, each with `path`, `mode`, `type` (blob/tree), `sha`, `size`. Limited to 100,000 entries and 7 MB response size. Check `truncated` field — if `true`, use non-recursive requests to traverse subdirectories.
+**Limits**: Max 100,000 entries, 7 MB response. Check `truncated` field.
 
-### 7. Repository Statistics
+### 9. Repository Statistics (REST Only)
 
-Pre-computed aggregate statistics for activity analysis.
+Pre-computed aggregate statistics are only available via REST:
 
-**Endpoints**:
 | Endpoint | Returns |
 |----------|---------|
-| `GET /repos/{owner}/{repo}/stats/commit_activity` | Weekly commit counts for the last year (52 weeks), with daily breakdown |
+| `GET /repos/{owner}/{repo}/stats/commit_activity` | Weekly commit counts (52 weeks) with daily breakdown |
 | `GET /repos/{owner}/{repo}/stats/code_frequency` | Weekly additions and deletions |
-| `GET /repos/{owner}/{repo}/stats/participation` | Weekly commit counts split by owner vs all contributors |
-| `GET /repos/{owner}/{repo}/stats/punch_card` | Hourly commit distribution [day, hour, count] |
-| `GET /repos/{owner}/{repo}/stats/contributors` | Per-contributor weekly stats |
+| `GET /repos/{owner}/{repo}/stats/participation` | Weekly commits: owner vs all contributors |
+| `GET /repos/{owner}/{repo}/stats/punch_card` | Hourly commit distribution `[day, hour, count]` |
 
-**Important**: All statistics exclude merge commits. Code frequency is limited to repos with fewer than 10,000 commits. Stats responses may be `202` (computing) — retry with delay.
+**Important**: Stats endpoints may return `202 Accepted` while computing — retry after 2-3 seconds. All exclude merge commits. Code frequency is limited to repos with <10,000 commits.
 
-### 8. Search API
+---
 
-Find repositories, issues, code, commits, and users matching complex queries.
+## Cursor-Based Pagination
 
-**Endpoints**:
-| Endpoint | Sort options | Rate limit |
-|----------|-------------|------------|
-| `GET /search/repositories?q=...` | `stars`, `forks`, `updated` | 30/min |
-| `GET /search/issues?q=...` | `comments`, `reactions`, `created`, `updated` | 30/min |
-| `GET /search/commits?q=...` | `author-date`, `committer-date` | 30/min |
-| `GET /search/code?q=...` | — | 10/min |
-| `GET /search/users?q=...` | `followers`, `repositories`, `joined` | 30/min |
+GraphQL uses **cursor-based pagination** (not offset-based). Every connection (issues, pullRequests, history, etc.) requires:
 
-**Query syntax** (the `q` parameter supports qualifiers):
-```
-# Search issues in a specific repo with label
-q=repo:leanprover-community/mathlib4+label:bug+state:closed
+- `first: N` (1-100) — number of items per page
+- `after: $cursor` — cursor from the previous page's `endCursor`
+- `pageInfo { hasNextPage endCursor }` — must be included in every paginated query
 
-# Search repos by language and stars
-q=language:lean+stars:>100
-
-# Search commits by author and date
-q=repo:owner/repo+author:username+author-date:>2023-01-01
-```
-
-**Constraints**: Maximum 1,000 results per search. Query limited to 256 characters (excluding operators). Max 5 AND/OR/NOT operators per query. Max 100 results per page.
-
-## Pagination Strategy
-
-**All list endpoints are paginated.** You MUST paginate to collect complete datasets.
-
-### How Pagination Works
-
-1. GitHub returns a `Link` header with `rel="next"` and `rel="last"` URLs
-2. Use `per_page=100` (maximum) to minimize total requests
-3. Continue fetching while `rel="next"` exists in the response headers
-4. Stop when `rel="next"` is absent
-
-### Python Pagination Pattern
+### Pagination Loop (Python)
 
 ```python
 import requests
+import json
 import time
 
-def paginated_get(url, token, params=None):
-    """Fetch all pages from a GitHub API endpoint."""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    params = params or {}
-    params["per_page"] = 100
-    all_items = []
+ENDPOINT = "https://api.github.com/graphql"
 
-    while url:
-        resp = requests.get(url, headers=headers, params=params)
+def graphql_paginated(token, query, variables, path_to_page_info):
+    """Fetch all pages from a GraphQL connection.
 
-        # Handle rate limiting
-        if resp.status_code == 403 and "rate limit" in resp.text.lower():
-            reset_time = int(resp.headers.get("X-RateLimit-Reset", 0))
-            wait = max(reset_time - time.time(), 1)
-            print(f"Rate limited. Waiting {wait:.0f}s...")
-            time.sleep(wait)
-            continue
+    Args:
+        token: GitHub personal access token
+        query: GraphQL query string (must use $cursor variable)
+        variables: Dict of query variables (cursor will be updated)
+        path_to_page_info: Dot-separated path to pageInfo in response
+            e.g., "repository.issues" or "repository.defaultBranchRef.target.history"
 
-        # Handle 202 (stats being computed)
-        if resp.status_code == 202:
-            time.sleep(3)
-            continue
+    Returns:
+        List of all nodes across all pages
+    """
+    headers = {"Authorization": f"bearer {token}", "Content-Type": "application/json"}
+    all_nodes = []
+    cursor = None
 
-        resp.raise_for_status()
+    while True:
+        variables["cursor"] = cursor
+        resp = requests.post(ENDPOINT,
+                             json={"query": query, "variables": variables},
+                             headers=headers)
         data = resp.json()
-        if isinstance(data, list):
-            all_items.extend(data)
-        else:
-            all_items.append(data)
 
-        # Follow Link header for next page
-        url = None
-        params = {}  # URL in Link header already includes params
-        link_header = resp.headers.get("Link", "")
-        for part in link_header.split(","):
-            if 'rel="next"' in part:
-                url = part.split(";")[0].strip().strip("<>")
+        if "errors" in data:
+            print(f"GraphQL errors: {data['errors']}")
+            break
 
-    return all_items
+        # Navigate to the connection
+        connection = data["data"]
+        for key in path_to_page_info.split("."):
+            connection = connection[key]
+
+        nodes = connection.get("nodes", [])
+        all_nodes.extend(nodes)
+
+        page_info = connection["pageInfo"]
+        rate = data["data"].get("rateLimit", {})
+        print(f"  Fetched {len(nodes)} items (total: {len(all_nodes)}) | "
+              f"Rate limit: {rate.get('remaining', '?')} remaining")
+
+        if not page_info["hasNextPage"]:
+            break
+        cursor = page_info["endCursor"]
+
+        # Rate limit check
+        if rate.get("remaining", 100) < 50:
+            print("  Low rate limit, waiting 60s...")
+            time.sleep(60)
+
+    return all_nodes
 ```
 
-### curl Pagination (bash)
+### Pagination with `gh` CLI (Auto)
+
+The `gh api graphql --paginate` flag automatically follows cursors:
 
 ```bash
-#!/bin/bash
-# Paginate through all results
-PAGE=1
-while true; do
-  RESPONSE=$(curl -s -w "\n%{http_code}" \
-    -H "Authorization: Bearer $GITHUB_TOKEN" \
-    -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/{owner}/{repo}/issues?state=all&per_page=100&page=$PAGE")
-
-  HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-  BODY=$(echo "$RESPONSE" | sed '$d')
-
-  # Check for empty array (no more results)
-  if [ "$BODY" = "[]" ] || [ "$HTTP_CODE" != "200" ]; then
-    break
-  fi
-
-  echo "$BODY" >> all_issues.json
-  PAGE=$((PAGE + 1))
-  sleep 0.5  # Be polite to the API
-done
+gh api graphql --paginate --slurp -f query='
+  query($endCursor: String) {
+    repository(owner: "pytorch", name: "pytorch") {
+      issues(first: 100, after: $endCursor, states: [OPEN, CLOSED]) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number title state createdAt }
+      }
+    }
+  }
+' > all_issues.json
 ```
+
+**Requirements for `--paginate`:**
+1. The cursor variable **must** be named `$endCursor`
+2. Query **must** include `pageInfo { hasNextPage endCursor }`
+3. Use `--slurp` to merge all pages into a single JSON array
+
+---
 
 ## Rate Limit Management
 
-### Rate Limit Overview
+### GraphQL Rate Limits
 
-| Category | Authenticated | Unauthenticated |
-|----------|--------------|-----------------|
-| Core API | 5,000 /hour | 60 /hour |
-| Search API | 30 /minute | 10 /minute |
-| Code Search | 10 /minute | N/A |
+| Category | Limit |
+|----------|-------|
+| Authenticated (PAT/OAuth) | 5,000 points/hour |
+| GitHub Enterprise Cloud | 10,000 points/hour |
+| Burst limit | 2,000 points/minute |
+| Max concurrent | 100 requests (REST + GraphQL combined) |
+| Query timeout | 10 seconds (excess deducts extra points) |
 
-### Monitoring Rate Limits
+**Point costs:**
+- Query (no mutation): **1 point**
+- Mutation: **5 points**
+- Complex queries with many connections cost more (server estimates nested API calls / 100, minimum 1)
 
-Check current usage via response headers on every request:
-- `X-RateLimit-Limit` — Maximum requests allowed
-- `X-RateLimit-Remaining` — Requests remaining in current window
-- `X-RateLimit-Reset` — Unix timestamp when the limit resets
+### Always Include `rateLimit` in Queries
 
-Or query the dedicated endpoint (does NOT count against your limit):
-```bash
-curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-  "https://api.github.com/rate_limit"
+```graphql
+rateLimit {
+  limit       # max points per hour
+  cost        # points this query consumed
+  remaining   # points left in current window
+  resetAt     # ISO 8601 timestamp when limit resets
+  used        # points used so far
+  nodeCount   # nodes returned by this query
+}
 ```
 
-### Best Practices for Rate Limits
+### Monitoring via Dedicated Query
 
-1. **Always authenticate** — Use `GITHUB_TOKEN` for 5,000 req/hour vs 60
-2. **Check remaining** — Read `X-RateLimit-Remaining` header before bursts
-3. **Exponential backoff** — On 403/429, wait and retry with increasing delays
-4. **Batch efficiently** — Use `per_page=100` to minimize total requests
-5. **Cache responses** — Save raw JSON to disk; avoid re-fetching unchanged data
-6. **Conditional requests** — Use `If-Modified-Since` or `If-None-Match` (ETag) headers for 304 responses that don't count against limits
-7. **Stagger search queries** — Search API is limited to 30/minute; add 2s delays between searches
+```graphql
+query { rateLimit { limit remaining resetAt used } }
+```
+
+Or via `gh`:
+```bash
+gh api graphql -f query='{ rateLimit { limit remaining resetAt used } }'
+```
+
+### Best Practices
+
+1. **Always authenticate** — 5,000 points/hour vs 0 unauthenticated (GraphQL requires auth)
+2. **Include `rateLimit`** in every query to track budget in real time
+3. **Request only needed fields** — fewer connections = lower point cost
+4. **Use aliases to batch** — 10 repos in 1 query costs ~1 point, not 10
+5. **Use fragments** — avoid repetition, keep queries readable
+6. **Cache responses** — save raw JSON to disk; avoid re-fetching unchanged data
+7. **Respect burst limits** — max 2,000 points/minute; add small delays in tight loops
+8. **Use `gh --paginate`** for CLI scripts — handles cursor logic automatically
+
+### GraphQL vs REST Rate Comparison (Mining 1 Repo)
+
+| Data Type | REST Requests | GraphQL Queries | GraphQL Savings |
+|-----------|--------------|----------------|-----------------|
+| Repo metadata + topics + languages + README | 4 | **1** | 75% |
+| 1,000 issues with labels | 10 | **10** | Same page count, but richer data per page |
+| 1,000 issues + first 5 comments each | 10 + 1,000 = **1,010** | **10** | **99%** |
+| 500 PRs + files + reviews | 500 x 3 = **1,500** | **50** (with nested files/reviews) | **97%** |
+| 10 repo comparison | 10 x 4 = **40** | **1** (aliases) | **97.5%** |
+
+---
 
 ## Data Collection Workflow
 
-### Step 1: Repository Overview
+### Step 1: Repository Overview (GraphQL)
 ```
-GET /repos/{owner}/{repo}
-→ Extract: stars, forks, language, created_at, description, topics
-```
-
-### Step 2: File Tree Mapping
-```
-GET /repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1
-→ Extract: complete directory structure for domain/module mapping
+query GetRepository → metadata, topics, languages, license, README
+→ 1 query replaces 4+ REST calls
 ```
 
-### Step 3: Contributor Census
+### Step 2: File Tree Mapping (REST)
 ```
-GET /repos/{owner}/{repo}/contributors?per_page=100 (paginate)
-GET /repos/{owner}/{repo}/stats/contributors
-→ Extract: contributor list with commit counts, weekly activity
-```
-
-### Step 4: Commit History
-```
-GET /repos/{owner}/{repo}/commits?per_page=100&since=...&until=... (paginate)
-→ Extract: author, date, message, SHA for each commit
-→ Segment by time period for growth analysis
+GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1
+→ REST-only; extract complete directory structure
 ```
 
-### Step 5: Issue Corpus
+### Step 3: Commit History (GraphQL, paginated)
 ```
-GET /repos/{owner}/{repo}/issues?state=all&per_page=100 (paginate)
-→ Filter: exclude items with pull_request key for pure issues
-→ Extract: title, body, labels, state, creator, created_at, closed_at, comments
-→ For each issue: GET .../issues/{n}/comments for discussion text
+query GetCommits with cursor pagination
+→ Each node includes additions/deletions inline (REST needs per-commit GETs)
 ```
 
-### Step 6: Pull Request Data
+### Step 4: Issue Corpus (GraphQL, paginated)
 ```
-GET /repos/{owner}/{repo}/pulls?state=all&per_page=100 (paginate)
-→ Extract: title, state, created_at, merged_at, user, labels, additions, deletions
-→ For key PRs: GET .../pulls/{n}/files for changed-file analysis
+query GetIssues with inline comments(first: 5)
+→ Issues + first 5 comments in one pass; no separate comment fetches
 ```
 
-### Step 7: Activity Statistics
+### Step 5: Pull Request Data (GraphQL, paginated)
 ```
-GET /repos/{owner}/{repo}/stats/commit_activity
-GET /repos/{owner}/{repo}/stats/code_frequency
-GET /repos/{owner}/{repo}/stats/participation
-GET /repos/{owner}/{repo}/stats/punch_card
-→ Extract: weekly/daily aggregate activity patterns
+query GetPullRequests with inline files + reviews
+→ PR metadata + changed files + review status in one query
 ```
+
+### Step 6: Contributor Census (GraphQL + REST)
+```
+GraphQL: Extract unique authors from commit history
+REST: GET /repos/{owner}/{repo}/stats/contributors for weekly stats
+```
+
+### Step 7: Activity Statistics (REST)
+```
+GET .../stats/commit_activity
+GET .../stats/code_frequency
+GET .../stats/participation
+GET .../stats/punch_card
+→ REST-only aggregate statistics
+```
+
+---
+
+## `gh` CLI Quick Reference
+
+| Flag | Purpose |
+|------|---------|
+| `-f key=value` | Pass a **string** variable |
+| `-F key=value` | Pass a **typed** variable (int, bool, null) |
+| `--paginate` | Auto-fetch all pages (requires `$endCursor` + `pageInfo`) |
+| `--slurp` | Merge paginated responses into a single JSON array |
+| `--jq EXPR` | Filter response with a jq expression |
+| `--input FILE` | Read query body from a `.graphql` file |
+| `-t TEMPLATE` | Format output with Go template |
+
+### Common Patterns
+
+```bash
+# Quick repo info
+gh api graphql -F owner="owner" -F name="repo" -f query='
+  query($owner: String!, $name: String!) {
+    repository(owner: $owner, name: $name) {
+      stargazerCount forkCount description
+    }
+  }
+'
+
+# Search + filter to TSV
+gh api graphql -f query='
+  query {
+    search(query: "topic:deep-learning stars:>=500", type: REPOSITORY, first: 50) {
+      nodes { ... on Repository { nameWithOwner stargazerCount } }
+    }
+  }
+' --jq '.data.search.nodes[] | [.nameWithOwner, .stargazerCount] | @tsv'
+
+# Paginate all issues to file
+gh api graphql --paginate --slurp -f query='
+  query($endCursor: String) {
+    repository(owner: "pytorch", name: "pytorch") {
+      issues(first: 100, after: $endCursor, states: [OPEN, CLOSED]) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number title state createdAt author { login } }
+      }
+    }
+  }
+' > issues.json
+
+# Read query from file
+gh api graphql --input queries/repo_overview.graphql \
+  -F owner="pytorch" -F name="pytorch"
+
+# Batch repos in one call
+gh api graphql -f query='
+  query {
+    a: repository(owner: "pytorch", name: "pytorch") { stargazerCount }
+    b: repository(owner: "tensorflow", name: "tensorflow") { stargazerCount }
+    c: repository(owner: "huggingface", name: "transformers") { stargazerCount }
+  }
+'
+```
+
+---
 
 ## Output Data Formats
 
 ### Recommended Output Structure
 ```
 output_dir/
-├── repo_metadata.json          # Repository overview
-├── file_tree.json              # Complete directory structure
+├── repo_metadata.json          # Repository overview (GraphQL)
+├── file_tree.json              # Complete directory structure (REST)
 ├── contributors.json           # Contributor list with stats
 ├── commits/
 │   ├── commits_2023.json       # Commits segmented by year
 │   └── commits_2024.json
 ├── issues/
-│   ├── issues_all.json         # All issues with metadata
-│   └── issue_comments/         # Comments per issue
-│       ├── issue_1.json
-│       └── issue_2.json
+│   ├── issues_all.json         # All issues with inline comments
+│   └── issue_comments/         # Full comment threads (if needed)
 ├── pull_requests/
-│   ├── prs_all.json            # All PRs with metadata
-│   └── pr_files/               # Changed files per PR
-├── stats/
+│   ├── prs_all.json            # All PRs with files + reviews
+│   └── pr_files/               # Detailed file changes per PR
+├── stats/                      # REST-only statistics
 │   ├── commit_activity.json
 │   ├── code_frequency.json
 │   ├── participation.json
@@ -435,7 +817,7 @@ output_dir/
 - Analyze response times to newcomer vs established contributor issues
 
 ### Issue Taxonomy (Open Coding)
-- Extract issue titles and first N comments
+- Extract issue titles and first N comments (available inline from GraphQL)
 - Categorize by labels and by content analysis
 - Build frequency distribution of challenge types
 - Cross-reference with contributor tenure for friction analysis
@@ -456,29 +838,31 @@ output_dir/
 
 All data collection must meet these criteria:
 
-1. **Completeness**: Always paginate to collect ALL items, not just the first page
-2. **Accuracy**: Validate response codes and handle edge cases (empty repos, 404s, rate limits)
-3. **Reproducibility**: Save raw API responses; document all collection parameters and date ranges
-4. **Rate-limit compliance**: Never exceed API limits; implement proper backoff and waiting
+1. **Completeness**: Always paginate cursors until `hasNextPage` is `false`
+2. **Accuracy**: Check for `"errors"` in GraphQL responses; handle rate limits and timeouts
+3. **Reproducibility**: Save raw API responses; document all query variables and date ranges
+4. **Rate-limit compliance**: Include `rateLimit` in every query; never exceed 5,000 points/hour
 5. **Ethical use**: Only access public data; respect repository visibility and contributor privacy
-6. **Data integrity**: Check for `truncated` responses (trees), `incomplete_results` (search), and 202 retries (stats)
-7. **Proper authentication**: Always use `GITHUB_TOKEN` when available for higher rate limits and access
+6. **Data integrity**: GraphQL search is capped at 1,000 results — use date partitioning for larger sets
+7. **Proper authentication**: GraphQL **requires** a `GITHUB_TOKEN` (no unauthenticated access)
 
 ## Common Mistakes to Avoid
 
-1. **Not paginating** — First page returns only 30 items by default; large repos have thousands of issues/commits
-2. **Confusing issues and PRs** — The `/issues` endpoint returns BOTH; filter by absence of `pull_request` key for pure issues
-3. **Ignoring 202 responses** — Stats endpoints return 202 while computing; must retry after delay
-4. **Exceeding search limits** — Search returns max 1,000 total results; use date-range partitioning for larger datasets
-5. **Forgetting rate limits** — 5,000 req/hour sounds generous but disappears quickly when fetching comments for thousands of issues
-6. **Not caching** — Re-running collection without caching wastes rate-limit budget; save raw JSON
-7. **Missing merge commits in stats** — GitHub statistics endpoints exclude merge commits by design
-8. **Truncated trees** — Trees with >100,000 entries are truncated; check the `truncated` field
+1. **Not paginating cursors** — First page returns only `first: N` items; large repos have thousands of issues/commits
+2. **Using `page` instead of `$endCursor`** — GraphQL uses cursor-based pagination, not offset
+3. **Naming cursor variable wrong for `gh --paginate`** — Must be `$endCursor`, not `$cursor`
+4. **Missing `pageInfo` in query** — `gh --paginate` silently fails without `pageInfo { hasNextPage endCursor }`
+5. **Exceeding search limits** — Search returns max 1,000 total results; use date-range partitioning
+6. **Forgetting `rateLimit`** — Always include it to monitor budget; complex nested queries can cost more than 1 point
+7. **Using GraphQL for stats** — `/stats/*` endpoints are REST-only; GraphQL has no equivalent
+8. **Using GraphQL for file trees** — `/git/trees` is REST-only; GraphQL `object` can fetch individual files but not recursive trees
+9. **Over-fetching nested connections** — Requesting `comments(first: 100)` on 100 issues = 10,000 nodes; start small, paginate separately if needed
+10. **Not using fragments** — Repeated field selections bloat queries; use `fragment` for shared shapes
 
 ## Resources
 
-- `references/api_endpoints_reference.md` — Complete endpoint reference with all parameters
-- `references/pagination_and_rate_limits.md` — Detailed pagination and rate-limit handling guide
+- `references/api_endpoints_reference.md` — Complete GraphQL query reference with all fields
+- `references/pagination_and_rate_limits.md` — Cursor pagination and rate-limit handling guide
 - `references/search_query_syntax.md` — GitHub search query qualifiers and examples
 - `references/data_analysis_patterns.md` — Common analysis patterns for empirical research
 

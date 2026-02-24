@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""GitHub API data collection utility for empirical research.
+"""GitHub data collection utility using GraphQL API (v4) for empirical research.
+
+Uses GraphQL as the primary interface for efficient data fetching with precise
+field selection and nested queries. Falls back to REST for statistics endpoints
+and file trees which are not available in GraphQL.
 
 Usage:
     python github_api_fetch.py --repo owner/repo --output data/ --collect all
     python github_api_fetch.py --repo owner/repo --output data/ --collect commits issues prs
     python github_api_fetch.py --repo owner/repo --output data/ --collect commits --since 2024-01-01
-    python github_api_fetch.py --repo owner/repo --output data/ --collect stats contributors tree
+    python github_api_fetch.py --repo owner/repo --output data/ --collect stats tree
 
-Requires GITHUB_TOKEN environment variable for authenticated access (5,000 req/hour).
+    # Batch multiple repos
+    python github_api_fetch.py --repos pytorch/pytorch tensorflow/tensorflow --output data/ --collect metadata
+
+Requires GITHUB_TOKEN environment variable (GraphQL API requires authentication).
 """
 
 import argparse
@@ -25,98 +32,425 @@ except ImportError:
     sys.exit(1)
 
 # --- Configuration ---
-BASE_URL = "https://api.github.com"
+GRAPHQL_ENDPOINT = "https://api.github.com/graphql"
+REST_BASE_URL = "https://api.github.com"
 API_VERSION = "2022-11-28"
 PER_PAGE = 100
 
 
-def get_headers(token: str) -> dict:
-    """Build request headers with auth and API version."""
+# =============================================================================
+# GraphQL Queries
+# =============================================================================
+
+QUERY_REPO_METADATA = """
+query GetRepository($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    description
+    url
+    homepageUrl
+    stargazerCount
+    forkCount
+    watchers { totalCount }
+    isArchived
+    isFork
+    isPrivate
+    createdAt
+    updatedAt
+    pushedAt
+    diskUsage
+    primaryLanguage { name color }
+    languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
+      totalSize
+      edges { size node { name color } }
+    }
+    repositoryTopics(first: 20) {
+      nodes { topic { name } }
+    }
+    licenseInfo { name spdxId url }
+    defaultBranchRef { name }
+    readme: object(expression: "HEAD:README.md") {
+      ... on Blob { text byteSize }
+    }
+    issues(states: [OPEN, CLOSED]) { totalCount }
+    pullRequests(states: [OPEN, CLOSED, MERGED]) { totalCount }
+  }
+  rateLimit { limit remaining cost resetAt used }
+}
+"""
+
+QUERY_COMMITS = """
+query GetCommits($owner: String!, $name: String!, $cursor: String, $since: GitTimestamp, $until: GitTimestamp) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef {
+      target {
+        ... on Commit {
+          history(first: 100, after: $cursor, since: $since, until: $until) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              oid
+              messageHeadline
+              message
+              committedDate
+              additions
+              deletions
+              changedFilesIfAvailable
+              author {
+                name
+                email
+                user { login }
+              }
+              committer {
+                name
+                email
+                user { login }
+              }
+              parents(first: 2) { totalCount }
+            }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+"""
+
+QUERY_ISSUES = """
+query GetIssues($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, after: $cursor, states: [OPEN, CLOSED],
+           orderBy: {field: CREATED_AT, direction: ASC}) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        title
+        body
+        state
+        createdAt
+        updatedAt
+        closedAt
+        url
+        author { login }
+        labels(first: 10) { nodes { name color description } }
+        assignees(first: 5) { nodes { login } }
+        milestone { title number }
+        comments(first: 5) {
+          totalCount
+          nodes {
+            body
+            createdAt
+            author { login }
+          }
+        }
+        reactions { totalCount }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+"""
+
+QUERY_PULL_REQUESTS = """
+query GetPullRequests($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: 50, after: $cursor, states: [OPEN, CLOSED, MERGED],
+                 orderBy: {field: CREATED_AT, direction: ASC}) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        title
+        body
+        state
+        isDraft
+        createdAt
+        updatedAt
+        mergedAt
+        closedAt
+        url
+        author { login }
+        mergedBy { login }
+        additions
+        deletions
+        changedFiles
+        labels(first: 10) { nodes { name color } }
+        reviews(first: 5) {
+          totalCount
+          nodes {
+            state
+            author { login }
+            submittedAt
+          }
+        }
+        files(first: 50) {
+          nodes { path additions deletions }
+        }
+        comments { totalCount }
+        commits { totalCount }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+"""
+
+QUERY_CONTRIBUTORS = """
+query GetContributorCommits($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef {
+      target {
+        ... on Commit {
+          history(first: 100, after: $cursor) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              author {
+                name
+                email
+                user { login avatarUrl }
+              }
+              committedDate
+              additions
+              deletions
+            }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+"""
+
+QUERY_SEARCH_REPOS = """
+query SearchRepositories($query: String!, $cursor: String) {
+  search(query: $query, type: REPOSITORY, first: 100, after: $cursor) {
+    repositoryCount
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on Repository {
+        nameWithOwner
+        description
+        url
+        stargazerCount
+        forkCount
+        createdAt
+        updatedAt
+        pushedAt
+        isArchived
+        isFork
+        primaryLanguage { name color }
+        licenseInfo { name spdxId }
+        repositoryTopics(first: 10) {
+          nodes { topic { name } }
+        }
+        defaultBranchRef { name }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+"""
+
+# Fragment for batch queries
+FRAGMENT_REPO_FIELDS = """
+fragment RepoFields on Repository {
+  nameWithOwner
+  description
+  url
+  stargazerCount
+  forkCount
+  createdAt
+  updatedAt
+  primaryLanguage { name color }
+  licenseInfo { name spdxId }
+  repositoryTopics(first: 10) { nodes { topic { name } } }
+  defaultBranchRef {
+    target {
+      ... on Commit {
+        history(first: 1) { totalCount }
+      }
+    }
+  }
+  issues(states: [OPEN, CLOSED]) { totalCount }
+  pullRequests(states: [OPEN, CLOSED, MERGED]) { totalCount }
+}
+"""
+
+
+# =============================================================================
+# Core GraphQL Client
+# =============================================================================
+
+def graphql_request(token: str, query: str, variables: dict = None) -> dict:
+    """Execute a single GraphQL request.
+
+    Args:
+        token: GitHub personal access token
+        query: GraphQL query string
+        variables: Query variables dict
+
+    Returns:
+        Parsed JSON response
+
+    Raises:
+        requests.HTTPError: On non-200 responses
+        RuntimeError: On GraphQL errors
+    """
     headers = {
+        "Authorization": f"bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
+
+    resp = requests.post(GRAPHQL_ENDPOINT, json=payload, headers=headers)
+
+    # Handle rate limiting
+    if resp.status_code == 403:
+        reset_ts = int(resp.headers.get("X-RateLimit-Reset", 0))
+        wait = max(reset_ts - time.time(), 5)
+        print(f"  Rate limited. Waiting {wait:.0f}s...")
+        time.sleep(wait + 1)
+        # Retry once
+        resp = requests.post(GRAPHQL_ENDPOINT, json=payload, headers=headers)
+
+    if resp.status_code == 502:
+        print("  Server error (502), retrying in 5s...")
+        time.sleep(5)
+        resp = requests.post(GRAPHQL_ENDPOINT, json=payload, headers=headers)
+
+    resp.raise_for_status()
+    data = resp.json()
+
+    if "errors" in data:
+        for err in data["errors"]:
+            print(f"  GraphQL error: {err.get('message', err)}")
+        if "data" not in data or data["data"] is None:
+            raise RuntimeError(f"GraphQL query failed: {data['errors']}")
+
+    return data
+
+
+def graphql_paginated(token: str, query: str, variables: dict,
+                      connection_path: str, max_pages: int = None) -> list:
+    """Fetch all pages from a GraphQL connection using cursor pagination.
+
+    Args:
+        token: GitHub personal access token
+        query: GraphQL query with $cursor variable
+        variables: Base variables (cursor will be injected)
+        connection_path: Dot-separated path to the connection object
+            e.g., "repository.issues" or "repository.defaultBranchRef.target.history"
+        max_pages: Optional limit on pages fetched
+
+    Returns:
+        List of all nodes across all pages
+    """
+    all_nodes = []
+    cursor = None
+    page = 0
+
+    while True:
+        if max_pages and page >= max_pages:
+            print(f"  Reached max_pages limit ({max_pages})")
+            break
+
+        variables["cursor"] = cursor
+        data = graphql_request(token, query, variables)
+        page += 1
+
+        # Navigate to the connection
+        connection = data["data"]
+        for key in connection_path.split("."):
+            if connection is None:
+                print(f"  Warning: null at path segment '{key}' in {connection_path}")
+                return all_nodes
+            connection = connection[key]
+
+        nodes = connection.get("nodes", [])
+        all_nodes.extend(nodes)
+
+        page_info = connection["pageInfo"]
+        total = connection.get("totalCount", "?")
+        rate = data["data"].get("rateLimit", {})
+
+        print(f"  Page {page}: {len(nodes)} items (total: {len(all_nodes)}/{total}) | "
+              f"Rate: {rate.get('remaining', '?')} remaining, cost={rate.get('cost', '?')}")
+
+        if not page_info["hasNextPage"]:
+            break
+        cursor = page_info["endCursor"]
+
+        # Safety: if rate limit is low, pause
+        remaining = rate.get("remaining", 100)
+        if remaining < 50:
+            reset_at = rate.get("resetAt", "")
+            print(f"  Low rate limit ({remaining}). Waiting 60s... (resets at {reset_at})")
+            time.sleep(60)
+        else:
+            time.sleep(0.1)  # Small delay for politeness
+
+    return all_nodes
+
+
+# =============================================================================
+# REST Client (for stats/tree endpoints not in GraphQL)
+# =============================================================================
+
+def rest_get(token: str, url: str, params: dict = None) -> requests.Response:
+    """Make a REST API GET request with rate-limit handling."""
+    headers = {
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": API_VERSION,
     }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
+    resp = requests.get(url, headers=headers, params=params)
 
-
-def rate_limit_wait(response: requests.Response) -> bool:
-    """Check if rate-limited and wait if needed. Returns True if should retry."""
-    remaining = int(response.headers.get("X-RateLimit-Remaining", 1))
-    if response.status_code in (403, 429) or remaining == 0:
-        reset_ts = int(response.headers.get("X-RateLimit-Reset", 0))
-        wait = max(reset_ts - time.time(), 1)
-        print(f"  Rate limited. Waiting {wait:.0f}s until reset...")
+    if resp.status_code in (403, 429):
+        reset_ts = int(resp.headers.get("X-RateLimit-Reset", 0))
+        wait = max(reset_ts - time.time(), 5)
+        print(f"  Rate limited (REST). Waiting {wait:.0f}s...")
         time.sleep(wait + 1)
-        return True
-    return False
+        resp = requests.get(url, headers=headers, params=params)
+
+    return resp
 
 
-def paginated_get(url: str, headers: dict, params: dict = None,
-                  max_pages: int = None, delay: float = 0.1) -> list:
-    """Fetch all pages from a GitHub API endpoint.
-
-    Args:
-        url: Full API URL
-        headers: Request headers (with auth)
-        params: Query parameters
-        max_pages: Optional page limit
-        delay: Seconds between requests (politeness)
-
-    Returns:
-        List of all items across all pages
-    """
+def rest_paginated(token: str, url: str, params: dict = None) -> list:
+    """Paginate through a REST API endpoint using Link headers."""
     params = dict(params or {})
     params["per_page"] = PER_PAGE
     all_items = []
-    page_count = 0
 
     while url:
-        if max_pages and page_count >= max_pages:
-            break
+        resp = rest_get(token, url, params)
 
-        resp = requests.get(url, headers=headers, params=params)
-        page_count += 1
-
-        # Handle rate limiting
-        if rate_limit_wait(resp):
-            continue
-
-        # Handle 202 Accepted (stats being computed)
         if resp.status_code == 202:
             print("  Stats being computed, retrying in 3s...")
             time.sleep(3)
             continue
-
-        # Handle 204 No Content
         if resp.status_code == 204:
             break
-
         if resp.status_code != 200:
             print(f"  Warning: HTTP {resp.status_code} for {url}")
-            print(f"  Response: {resp.text[:200]}")
             break
 
         data = resp.json()
-
         if isinstance(data, list):
-            if len(data) == 0:
+            if not data:
                 break
             all_items.extend(data)
-            print(f"  Page {page_count}: {len(data)} items (total: {len(all_items)})")
-        elif isinstance(data, dict) and "items" in data:
-            # Search endpoint format
-            all_items.extend(data["items"])
-            print(f"  Page {page_count}: {len(data['items'])} items (total: {len(all_items)})")
-            if len(data["items"]) == 0:
-                break
         else:
             all_items.append(data)
 
-        # Parse Link header for next page
+        # Follow Link header
         url = None
-        params = {}  # Link URLs include params already
+        params = {}
         link_header = resp.headers.get("Link", "")
         for part in link_header.split(","):
             if 'rel="next"' in part:
@@ -124,46 +458,62 @@ def paginated_get(url: str, headers: dict, params: dict = None,
                 break
 
         if url:
-            time.sleep(delay)
+            time.sleep(0.1)
 
     return all_items
 
+
+# =============================================================================
+# Data Collection Functions
+# =============================================================================
 
 def save_json(data, filepath: Path):
     """Save data as JSON with pretty formatting."""
     filepath.parent.mkdir(parents=True, exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    print(f"  Saved: {filepath} ({len(data) if isinstance(data, list) else 1} items)")
+    count = len(data) if isinstance(data, list) else 1
+    print(f"  Saved: {filepath} ({count} items)")
 
 
-def fetch_repo_metadata(owner: str, repo: str, headers: dict, output_dir: Path):
-    """Fetch repository metadata."""
-    print("\n[1/7] Fetching repository metadata...")
-    url = f"{BASE_URL}/repos/{owner}/{repo}"
-    resp = requests.get(url, headers=headers)
-    if rate_limit_wait(resp):
-        resp = requests.get(url, headers=headers)
-    resp.raise_for_status()
-    data = resp.json()
-    save_json(data, output_dir / "repo_metadata.json")
-    return data
+def fetch_repo_metadata(owner: str, repo: str, token: str, output_dir: Path):
+    """Fetch repository metadata via GraphQL (replaces 4+ REST calls)."""
+    print("\n[1/7] Fetching repository metadata (GraphQL)...")
+    data = graphql_request(token, QUERY_REPO_METADATA,
+                           {"owner": owner, "name": repo})
+    repo_data = data["data"]["repository"]
+    save_json(repo_data, output_dir / "repo_metadata.json")
+    rate = data["data"]["rateLimit"]
+    print(f"  Rate limit: {rate['remaining']}/{rate['limit']} (cost: {rate['cost']})")
+    return repo_data
 
 
-def fetch_file_tree(owner: str, repo: str, headers: dict, output_dir: Path,
-                    branch: str = "main"):
-    """Fetch complete recursive file tree."""
-    print("\n[2/7] Fetching file tree...")
-    url = f"{BASE_URL}/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-    resp = requests.get(url, headers=headers)
-    if rate_limit_wait(resp):
-        resp = requests.get(url, headers=headers)
+def fetch_file_tree(owner: str, repo: str, token: str, output_dir: Path,
+                    branch: str = None):
+    """Fetch complete recursive file tree (REST only)."""
+    print("\n[2/7] Fetching file tree (REST)...")
+    if branch is None:
+        # Get default branch from a quick GraphQL call
+        data = graphql_request(token, """
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                defaultBranchRef { name }
+              }
+            }
+        """, {"owner": owner, "name": repo})
+        branch = data["data"]["repository"]["defaultBranchRef"]["name"]
+
+    url = f"{REST_BASE_URL}/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+    resp = rest_get(token, url)
 
     if resp.status_code == 404:
-        # Try 'master' branch if 'main' not found
-        print(f"  Branch '{branch}' not found, trying 'master'...")
-        url = f"{BASE_URL}/repos/{owner}/{repo}/git/trees/master?recursive=1"
-        resp = requests.get(url, headers=headers)
+        print(f"  Branch '{branch}' not found, trying 'main'...")
+        url = f"{REST_BASE_URL}/repos/{owner}/{repo}/git/trees/main?recursive=1"
+        resp = rest_get(token, url)
+        if resp.status_code == 404:
+            print("  Trying 'master'...")
+            url = f"{REST_BASE_URL}/repos/{owner}/{repo}/git/trees/master?recursive=1"
+            resp = rest_get(token, url)
 
     resp.raise_for_status()
     data = resp.json()
@@ -177,104 +527,133 @@ def fetch_file_tree(owner: str, repo: str, headers: dict, output_dir: Path,
     return tree_entries
 
 
-def fetch_contributors(owner: str, repo: str, headers: dict, output_dir: Path):
-    """Fetch contributor list and stats."""
-    print("\n[3/7] Fetching contributors...")
+def fetch_contributors(owner: str, repo: str, token: str, output_dir: Path):
+    """Fetch contributor data from commit history (GraphQL) + weekly stats (REST)."""
+    print("\n[3/7] Fetching contributors (GraphQL + REST)...")
 
-    # Basic contributor list
-    url = f"{BASE_URL}/repos/{owner}/{repo}/contributors"
-    contributors = paginated_get(url, headers)
-    save_json(contributors, output_dir / "contributors.json")
+    # Extract unique contributors from commit history via GraphQL
+    print("  Extracting contributors from commit history...")
+    commit_nodes = graphql_paginated(
+        token, QUERY_CONTRIBUTORS,
+        {"owner": owner, "name": repo},
+        "repository.defaultBranchRef.target.history"
+    )
 
-    # Detailed contributor stats (weekly data)
-    print("  Fetching detailed contributor stats...")
-    url = f"{BASE_URL}/repos/{owner}/{repo}/stats/contributors"
-    stats = paginated_get(url, headers)
-    save_json(stats, output_dir / "contributor_stats.json")
+    # Aggregate contributor stats
+    contributors = {}
+    for node in commit_nodes:
+        author = node.get("author", {})
+        if not author:
+            continue
+        user = author.get("user") or {}
+        login = user.get("login", author.get("email", "unknown"))
+        if login not in contributors:
+            contributors[login] = {
+                "login": login,
+                "name": author.get("name", ""),
+                "email": author.get("email", ""),
+                "avatar_url": user.get("avatarUrl", ""),
+                "commits": 0,
+                "additions": 0,
+                "deletions": 0,
+                "first_commit": node["committedDate"],
+                "last_commit": node["committedDate"],
+            }
+        c = contributors[login]
+        c["commits"] += 1
+        c["additions"] += node.get("additions", 0)
+        c["deletions"] += node.get("deletions", 0)
+        if node["committedDate"] < c["first_commit"]:
+            c["first_commit"] = node["committedDate"]
+        if node["committedDate"] > c["last_commit"]:
+            c["last_commit"] = node["committedDate"]
 
-    return contributors
+    contributor_list = sorted(contributors.values(), key=lambda x: -x["commits"])
+    save_json(contributor_list, output_dir / "contributors.json")
+    print(f"  Found {len(contributor_list)} unique contributors")
+
+    # Also fetch detailed weekly stats via REST (not available in GraphQL)
+    print("  Fetching detailed weekly stats (REST)...")
+    url = f"{REST_BASE_URL}/repos/{owner}/{repo}/stats/contributors"
+    retries = 0
+    while retries < 5:
+        resp = rest_get(token, url)
+        if resp.status_code == 202:
+            retries += 1
+            print(f"    Computing... retry {retries}/5")
+            time.sleep(3)
+            continue
+        if resp.status_code == 200:
+            save_json(resp.json(), output_dir / "contributor_weekly_stats.json")
+        else:
+            print(f"    Warning: HTTP {resp.status_code} for weekly stats")
+        break
+
+    return contributor_list
 
 
-def fetch_commits(owner: str, repo: str, headers: dict, output_dir: Path,
+def fetch_commits(owner: str, repo: str, token: str, output_dir: Path,
                   since: str = None, until: str = None):
-    """Fetch commit history."""
-    print("\n[4/7] Fetching commits...")
-    url = f"{BASE_URL}/repos/{owner}/{repo}/commits"
-    params = {}
+    """Fetch commit history via GraphQL with inline diff stats."""
+    print("\n[4/7] Fetching commits (GraphQL)...")
+    variables = {"owner": owner, "name": repo}
     if since:
-        params["since"] = f"{since}T00:00:00Z"
+        variables["since"] = f"{since}T00:00:00Z"
     if until:
-        params["until"] = f"{until}T23:59:59Z"
+        variables["until"] = f"{until}T23:59:59Z"
 
-    commits = paginated_get(url, headers, params=params)
+    commits = graphql_paginated(
+        token, QUERY_COMMITS, variables,
+        "repository.defaultBranchRef.target.history"
+    )
     save_json(commits, output_dir / "commits.json")
     return commits
 
 
-def fetch_issues(owner: str, repo: str, headers: dict, output_dir: Path,
-                 fetch_comments: bool = False, max_comment_issues: int = 500):
-    """Fetch all issues (excluding PRs)."""
-    print("\n[5/7] Fetching issues...")
-    url = f"{BASE_URL}/repos/{owner}/{repo}/issues"
-    params = {"state": "all", "sort": "created", "direction": "asc"}
-
-    all_items = paginated_get(url, headers, params=params)
-
-    # Separate issues from PRs
-    issues = [i for i in all_items if "pull_request" not in i]
-    prs_from_issues = [i for i in all_items if "pull_request" in i]
-    print(f"  Pure issues: {len(issues)}, PRs (filtered out): {len(prs_from_issues)}")
-
+def fetch_issues(owner: str, repo: str, token: str, output_dir: Path):
+    """Fetch all issues with inline comments via GraphQL."""
+    print("\n[5/7] Fetching issues (GraphQL, with inline comments)...")
+    issues = graphql_paginated(
+        token, QUERY_ISSUES,
+        {"owner": owner, "name": repo},
+        "repository.issues"
+    )
     save_json(issues, output_dir / "issues.json")
-
-    # Optionally fetch comments for issues
-    if fetch_comments and issues:
-        print(f"  Fetching comments for up to {max_comment_issues} issues...")
-        comments_dir = output_dir / "issue_comments"
-        comments_dir.mkdir(parents=True, exist_ok=True)
-
-        for i, issue in enumerate(issues[:max_comment_issues]):
-            if issue.get("comments", 0) == 0:
-                continue
-            comment_url = f"{BASE_URL}/repos/{owner}/{repo}/issues/{issue['number']}/comments"
-            comments = paginated_get(comment_url, headers, delay=0.2)
-            if comments:
-                save_json(comments, comments_dir / f"issue_{issue['number']}.json")
-            if (i + 1) % 50 == 0:
-                print(f"    Progress: {i + 1}/{min(len(issues), max_comment_issues)} issues")
-
+    print(f"  Total issues collected: {len(issues)}")
     return issues
 
 
-def fetch_pull_requests(owner: str, repo: str, headers: dict, output_dir: Path):
-    """Fetch all pull requests."""
-    print("\n[6/7] Fetching pull requests...")
-    url = f"{BASE_URL}/repos/{owner}/{repo}/pulls"
-    params = {"state": "all", "sort": "created", "direction": "asc"}
-
-    prs = paginated_get(url, headers, params=params)
+def fetch_pull_requests(owner: str, repo: str, token: str, output_dir: Path):
+    """Fetch all PRs with inline files and reviews via GraphQL."""
+    print("\n[6/7] Fetching pull requests (GraphQL, with files + reviews)...")
+    prs = graphql_paginated(
+        token, QUERY_PULL_REQUESTS,
+        {"owner": owner, "name": repo},
+        "repository.pullRequests"
+    )
     save_json(prs, output_dir / "pull_requests.json")
+    print(f"  Total PRs collected: {len(prs)}")
     return prs
 
 
-def fetch_stats(owner: str, repo: str, headers: dict, output_dir: Path):
-    """Fetch repository activity statistics."""
-    print("\n[7/7] Fetching repository statistics...")
+def fetch_stats(owner: str, repo: str, token: str, output_dir: Path):
+    """Fetch repository activity statistics (REST only)."""
+    print("\n[7/7] Fetching repository statistics (REST)...")
     stats_dir = output_dir / "stats"
     stats_dir.mkdir(parents=True, exist_ok=True)
 
     endpoints = {
-        "commit_activity": f"{BASE_URL}/repos/{owner}/{repo}/stats/commit_activity",
-        "code_frequency": f"{BASE_URL}/repos/{owner}/{repo}/stats/code_frequency",
-        "participation": f"{BASE_URL}/repos/{owner}/{repo}/stats/participation",
-        "punch_card": f"{BASE_URL}/repos/{owner}/{repo}/stats/punch_card",
+        "commit_activity": f"{REST_BASE_URL}/repos/{owner}/{repo}/stats/commit_activity",
+        "code_frequency": f"{REST_BASE_URL}/repos/{owner}/{repo}/stats/code_frequency",
+        "participation": f"{REST_BASE_URL}/repos/{owner}/{repo}/stats/participation",
+        "punch_card": f"{REST_BASE_URL}/repos/{owner}/{repo}/stats/punch_card",
     }
 
     for name, url in endpoints.items():
         print(f"  Fetching {name}...")
         retries = 0
         while retries < 5:
-            resp = requests.get(url, headers=headers)
+            resp = rest_get(token, url)
             if resp.status_code == 202:
                 retries += 1
                 print(f"    Computing... retry {retries}/5")
@@ -286,34 +665,111 @@ def fetch_stats(owner: str, repo: str, headers: dict, output_dir: Path):
             if resp.status_code == 422:
                 print(f"    Repo too large for {name} (10,000+ commits)")
                 break
-            if rate_limit_wait(resp):
-                continue
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                print(f"    Warning: HTTP {resp.status_code}")
+                break
             save_json(resp.json(), stats_dir / f"{name}.json")
             break
         time.sleep(0.5)
 
 
-def check_rate_limit(headers: dict):
-    """Print current rate limit status."""
-    resp = requests.get(f"{BASE_URL}/rate_limit", headers=headers)
-    if resp.status_code == 200:
-        data = resp.json()
-        core = data["resources"]["core"]
-        search = data["resources"]["search"]
-        print(f"Rate limits — Core: {core['remaining']}/{core['limit']} | "
-              f"Search: {search['remaining']}/{search['limit']}")
-    else:
-        print("Could not check rate limits (are you authenticated?)")
+def fetch_batch_metadata(repos: list, token: str, output_dir: Path):
+    """Fetch metadata for multiple repos in a single GraphQL query using aliases."""
+    print(f"\nBatch fetching metadata for {len(repos)} repos (GraphQL aliases)...")
 
+    # Build aliased query
+    alias_parts = []
+    for i, repo_str in enumerate(repos):
+        owner, name = repo_str.split("/")
+        alias = f"repo{i}"
+        alias_parts.append(
+            f'  {alias}: repository(owner: "{owner}", name: "{name}") {{ ...RepoFields }}'
+        )
+
+    query = FRAGMENT_REPO_FIELDS + "\nquery BatchRepos {\n"
+    query += "\n".join(alias_parts)
+    query += "\n  rateLimit { remaining cost resetAt }\n}"
+
+    data = graphql_request(token, query)
+    rate = data["data"].get("rateLimit", {})
+    print(f"  Rate limit: {rate.get('remaining', '?')} remaining, cost={rate.get('cost', '?')}")
+
+    # Save each repo's data
+    for i, repo_str in enumerate(repos):
+        alias = f"repo{i}"
+        repo_data = data["data"][alias]
+        safe_name = repo_str.replace("/", "_")
+        save_json(repo_data, output_dir / f"{safe_name}_metadata.json")
+
+    # Also save combined
+    combined = {repo_str: data["data"][f"repo{i}"] for i, repo_str in enumerate(repos)}
+    save_json(combined, output_dir / "batch_metadata.json")
+    return combined
+
+
+def search_repositories(query_str: str, token: str, output_dir: Path,
+                        max_pages: int = 10):
+    """Search GitHub repositories via GraphQL."""
+    print(f"\nSearching repositories: {query_str}")
+    repos = graphql_paginated(
+        token, QUERY_SEARCH_REPOS,
+        {"query": query_str},
+        "search",
+        max_pages=max_pages
+    )
+    save_json(repos, output_dir / "search_results.json")
+    print(f"  Found {len(repos)} repositories")
+    return repos
+
+
+def check_rate_limit(token: str):
+    """Print current rate limit status via GraphQL."""
+    data = graphql_request(token, "query { rateLimit { limit remaining resetAt used } }")
+    rate = data["data"]["rateLimit"]
+    print(f"Rate limit — GraphQL: {rate['remaining']}/{rate['limit']} "
+          f"(used: {rate['used']}, resets: {rate['resetAt']})")
+
+    # Also check REST limits
+    resp = rest_get(token, f"{REST_BASE_URL}/rate_limit")
+    if resp.status_code == 200:
+        rest_data = resp.json()
+        core = rest_data["resources"]["core"]
+        search = rest_data["resources"]["search"]
+        graphql = rest_data["resources"].get("graphql", {})
+        print(f"Rate limit — REST Core: {core['remaining']}/{core['limit']} | "
+              f"Search: {search['remaining']}/{search['limit']} | "
+              f"GraphQL: {graphql.get('remaining', 'N/A')}/{graphql.get('limit', 'N/A')}")
+
+
+# =============================================================================
+# Main CLI
+# =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="GitHub API data collection for empirical research",
+        description="GitHub data collection via GraphQL + REST for empirical research",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Collect all data for a single repo
+  python github_api_fetch.py --repo pytorch/pytorch --output data/ --collect all
+
+  # Collect only commits from 2024
+  python github_api_fetch.py --repo owner/repo -o data/ -c commits --since 2024-01-01
+
+  # Batch metadata for multiple repos (single GraphQL query)
+  python github_api_fetch.py --repos pytorch/pytorch tensorflow/tensorflow -o data/ -c metadata
+
+  # Search repositories by topic
+  python github_api_fetch.py --search "topic:machine-learning language:python stars:>=500" -o data/
+        """,
     )
-    parser.add_argument("--repo", "-r", required=True,
+    parser.add_argument("--repo", "-r",
                         help="Repository in owner/repo format")
+    parser.add_argument("--repos", nargs="+",
+                        help="Multiple repositories for batch queries (owner/repo format)")
+    parser.add_argument("--search", "-s",
+                        help="Search query string (GitHub search syntax)")
     parser.add_argument("--output", "-o", default="github_data",
                         help="Output directory (default: github_data/)")
     parser.add_argument("--collect", "-c", nargs="+",
@@ -323,71 +779,96 @@ def main():
                         help="What data to collect (default: all)")
     parser.add_argument("--since", help="Start date for commits (YYYY-MM-DD)")
     parser.add_argument("--until", help="End date for commits (YYYY-MM-DD)")
-    parser.add_argument("--with-comments", action="store_true",
-                        help="Also fetch issue comments (slow for large repos)")
-    parser.add_argument("--max-comment-issues", type=int, default=500,
-                        help="Max issues to fetch comments for (default: 500)")
+    parser.add_argument("--max-pages", type=int, default=None,
+                        help="Max pages to fetch per collection (for testing)")
 
     args = parser.parse_args()
 
-    # Parse repo
+    # Validate arguments
+    if not args.repo and not args.repos and not args.search:
+        parser.error("Provide --repo, --repos, or --search")
+
+    # Get token (required for GraphQL)
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        print("ERROR: GITHUB_TOKEN is required (GraphQL API requires authentication)")
+        print("Set it with: export GITHUB_TOKEN=your_token_here")
+        sys.exit(1)
+
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print("GitHub Data Collection (GraphQL + REST)")
+    print("=" * 50)
+
+    start_time = time.time()
+
+    # Handle search mode
+    if args.search:
+        check_rate_limit(token)
+        search_repositories(args.search, token, output_dir,
+                            max_pages=args.max_pages or 10)
+        elapsed = time.time() - start_time
+        print(f"\nDone! Elapsed: {elapsed:.1f}s")
+        check_rate_limit(token)
+        return
+
+    # Handle batch mode
+    if args.repos:
+        check_rate_limit(token)
+        fetch_batch_metadata(args.repos, token, output_dir)
+        elapsed = time.time() - start_time
+        print(f"\nDone! Elapsed: {elapsed:.1f}s")
+        check_rate_limit(token)
+        return
+
+    # Single repo mode
     parts = args.repo.split("/")
     if len(parts) != 2:
         print("ERROR: --repo must be in owner/repo format")
         sys.exit(1)
     owner, repo = parts
 
-    # Get token
-    token = os.environ.get("GITHUB_TOKEN", "")
-    if not token:
-        print("WARNING: GITHUB_TOKEN not set. Rate limit: 60 req/hour (vs 5,000 authenticated)")
-
-    headers = get_headers(token)
-    output_dir = Path(args.output) / f"{owner}_{repo}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    repo_output = output_dir / f"{owner}_{repo}"
+    repo_output.mkdir(parents=True, exist_ok=True)
 
     collect = set(args.collect)
     if "all" in collect:
         collect = {"metadata", "tree", "contributors", "commits", "issues", "prs", "stats"}
 
-    print(f"GitHub Data Collection")
     print(f"Repository: {owner}/{repo}")
-    print(f"Output: {output_dir}")
+    print(f"Output: {repo_output}")
     print(f"Collecting: {', '.join(sorted(collect))}")
-    print(f"Authenticated: {'Yes' if token else 'No'}")
-    check_rate_limit(headers)
+    print(f"API: GraphQL (primary) + REST (stats/tree)")
+    check_rate_limit(token)
     print("=" * 50)
 
-    start_time = time.time()
-
     if "metadata" in collect:
-        fetch_repo_metadata(owner, repo, headers, output_dir)
+        fetch_repo_metadata(owner, repo, token, repo_output)
 
     if "tree" in collect:
-        fetch_file_tree(owner, repo, headers, output_dir)
+        fetch_file_tree(owner, repo, token, repo_output)
 
     if "contributors" in collect:
-        fetch_contributors(owner, repo, headers, output_dir)
+        fetch_contributors(owner, repo, token, repo_output)
 
     if "commits" in collect:
-        fetch_commits(owner, repo, headers, output_dir,
+        fetch_commits(owner, repo, token, repo_output,
                       since=args.since, until=args.until)
 
     if "issues" in collect:
-        fetch_issues(owner, repo, headers, output_dir,
-                     fetch_comments=args.with_comments,
-                     max_comment_issues=args.max_comment_issues)
+        fetch_issues(owner, repo, token, repo_output)
 
     if "prs" in collect:
-        fetch_pull_requests(owner, repo, headers, output_dir)
+        fetch_pull_requests(owner, repo, token, repo_output)
 
     if "stats" in collect:
-        fetch_stats(owner, repo, headers, output_dir)
+        fetch_stats(owner, repo, token, repo_output)
 
     elapsed = time.time() - start_time
     print(f"\nDone! Elapsed: {elapsed:.1f}s")
-    print(f"Data saved to: {output_dir}")
-    check_rate_limit(headers)
+    print(f"Data saved to: {repo_output}")
+    check_rate_limit(token)
 
 
 if __name__ == "__main__":

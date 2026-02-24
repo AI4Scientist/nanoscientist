@@ -1,60 +1,298 @@
 # Pagination and Rate Limit Handling
 
-Comprehensive guide to paginating through GitHub API results and managing rate limits.
+Comprehensive guide to cursor-based pagination (GraphQL) and offset pagination (REST).
 
 ---
 
-## Pagination
+## GraphQL Cursor-Based Pagination
 
-### How GitHub Pagination Works
+### How It Works
 
-GitHub paginates all list endpoints. The default page size is 30 items; the maximum is 100.
+GraphQL uses **cursor-based pagination** — each page returns an opaque cursor string that points to the next set of results. This is more reliable than offset pagination (no duplicate/skipped items when data changes).
 
-**Key parameters**:
-- `per_page` — Number of results per page (1-100, default: 30)
-- `page` — Which page to retrieve (default: 1)
+**Every paginated connection requires:**
+1. `first: N` (1-100) — number of items per page
+2. `after: $cursor` — cursor from previous page (null for first page)
+3. `pageInfo { hasNextPage endCursor }` — **must** be included in query
 
-### Link Header Navigation
+### Pagination Loop Pattern
 
-Paginated responses include a `Link` header with URLs for related pages:
-
+```graphql
+query GetIssues($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, after: $cursor, states: [OPEN, CLOSED]) {
+      totalCount
+      pageInfo {
+        hasNextPage       # false on last page
+        endCursor         # pass as $cursor for next page
+      }
+      nodes {
+        number title state createdAt
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
 ```
-Link: <https://api.github.com/repos/owner/repo/issues?page=2&per_page=100>; rel="next",
-      <https://api.github.com/repos/owner/repo/issues?page=14&per_page=100>; rel="last"
-```
 
-**Relationship types**:
-| rel value | Meaning |
-|-----------|---------|
-| `next` | URL of the next page |
-| `prev` | URL of the previous page |
-| `first` | URL of the first page |
-| `last` | URL of the last page |
+**Algorithm:**
+1. Set `cursor = null`
+2. Execute query with current cursor
+3. Collect `nodes` from response
+4. Check `pageInfo.hasNextPage`
+   - If `true`: set `cursor = pageInfo.endCursor`, goto step 2
+   - If `false`: done
 
-**Rules**:
-- If `rel="next"` is absent, you are on the last page
-- `rel="last"` may be absent if total pages cannot be calculated
-- Always follow the `Link` header URLs rather than manually constructing page URLs
-
-### Python Pagination Implementation
+### Python Implementation
 
 ```python
 import requests
 import time
 import json
 
-def paginated_get(url, token, params=None, max_pages=None):
-    """Fetch all pages from a GitHub API endpoint.
+ENDPOINT = "https://api.github.com/graphql"
+
+def graphql_paginated(token, query, variables, connection_path, max_pages=None):
+    """Fetch all pages from a GraphQL connection.
 
     Args:
-        url: Full API URL (e.g., https://api.github.com/repos/owner/repo/issues)
         token: GitHub personal access token
-        params: Query parameters dict
-        max_pages: Optional limit on number of pages to fetch
+        query: GraphQL query string (must accept $cursor: String)
+        variables: Base variables dict (cursor will be injected)
+        connection_path: Dot-separated path to the connection object
+            e.g., "repository.issues"
+            e.g., "repository.defaultBranchRef.target.history"
+            e.g., "search"
+        max_pages: Optional page limit
 
     Returns:
-        List of all items across all pages
+        List of all nodes across all pages
     """
+    headers = {
+        "Authorization": f"bearer {token}",
+        "Content-Type": "application/json",
+    }
+    all_nodes = []
+    cursor = None
+    page = 0
+
+    while True:
+        if max_pages and page >= max_pages:
+            break
+
+        variables["cursor"] = cursor
+        resp = requests.post(ENDPOINT,
+                             json={"query": query, "variables": variables},
+                             headers=headers)
+
+        # Handle rate limiting
+        if resp.status_code == 403:
+            reset_ts = int(resp.headers.get("X-RateLimit-Reset", 0))
+            wait = max(reset_ts - time.time(), 5)
+            print(f"Rate limited. Waiting {wait:.0f}s...")
+            time.sleep(wait + 1)
+            continue
+
+        resp.raise_for_status()
+        data = resp.json()
+
+        if "errors" in data:
+            print(f"GraphQL errors: {data['errors']}")
+            if data.get("data") is None:
+                break
+
+        # Navigate to the connection object
+        connection = data["data"]
+        for key in connection_path.split("."):
+            connection = connection[key]
+
+        nodes = connection.get("nodes", [])
+        all_nodes.extend(nodes)
+        page += 1
+
+        page_info = connection["pageInfo"]
+        total = connection.get("totalCount", "?")
+        rate = data["data"].get("rateLimit", {})
+
+        print(f"Page {page}: {len(nodes)} items "
+              f"(total: {len(all_nodes)}/{total}) | "
+              f"rate: {rate.get('remaining', '?')} remaining")
+
+        if not page_info["hasNextPage"]:
+            break
+        cursor = page_info["endCursor"]
+
+        # Safety: pause if rate limit is low
+        if rate.get("remaining", 100) < 50:
+            print(f"Low rate limit ({rate['remaining']}). Waiting 60s...")
+            time.sleep(60)
+
+    return all_nodes
+```
+
+### Usage Examples
+
+```python
+# Fetch all issues
+QUERY = """
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, after: $cursor, states: [OPEN, CLOSED]) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes { number title state createdAt }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+"""
+issues = graphql_paginated(token, QUERY,
+    {"owner": "pytorch", "name": "pytorch"},
+    "repository.issues")
+
+# Fetch commits with date range
+COMMIT_QUERY = """
+query($owner: String!, $name: String!, $cursor: String, $since: GitTimestamp) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef { target { ... on Commit {
+      history(first: 100, after: $cursor, since: $since) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes { oid messageHeadline committedDate author { name user { login } } }
+      }
+    }}}
+  }
+  rateLimit { remaining cost resetAt }
+}
+"""
+commits = graphql_paginated(token, COMMIT_QUERY,
+    {"owner": "pytorch", "name": "pytorch", "since": "2024-01-01T00:00:00Z"},
+    "repository.defaultBranchRef.target.history")
+
+# Search repos
+SEARCH_QUERY = """
+query($q: String!, $cursor: String) {
+  search(query: $q, type: REPOSITORY, first: 100, after: $cursor) {
+    repositoryCount
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on Repository { nameWithOwner stargazerCount } }
+  }
+  rateLimit { remaining cost resetAt }
+}
+"""
+repos = graphql_paginated(token, SEARCH_QUERY,
+    {"q": "topic:deep-learning stars:>=500"},
+    "search", max_pages=10)
+```
+
+### `gh` CLI Auto-Pagination
+
+The `gh api graphql --paginate` flag handles cursor pagination automatically.
+
+**Requirements:**
+1. Cursor variable **must** be named `$endCursor` (not `$cursor`)
+2. Query **must** include `pageInfo { hasNextPage endCursor }`
+3. Use `--slurp` to merge all pages into one JSON array
+
+```bash
+# Paginate all issues
+gh api graphql --paginate --slurp -f query='
+  query($endCursor: String) {
+    repository(owner: "pytorch", name: "pytorch") {
+      issues(first: 100, after: $endCursor, states: [OPEN, CLOSED]) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number title state createdAt }
+      }
+    }
+  }
+' > all_issues.json
+
+# Paginate commits
+gh api graphql --paginate --slurp -f query='
+  query($endCursor: String) {
+    repository(owner: "pytorch", name: "pytorch") {
+      defaultBranchRef { target { ... on Commit {
+        history(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { oid messageHeadline committedDate author { name } }
+        }
+      }}}
+    }
+  }
+' > all_commits.json
+
+# Paginate search with TSV output
+gh api graphql --paginate -f query='
+  query($endCursor: String) {
+    search(query: "topic:ml stars:>=100", type: REPOSITORY,
+           first: 100, after: $endCursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ... on Repository { nameWithOwner stargazerCount } }
+    }
+  }
+' --jq '.data.search.nodes[] | [.nameWithOwner, .stargazerCount] | @tsv'
+```
+
+### Nested Pagination
+
+When a connection inside a paginated connection needs its own pagination (e.g., comments inside issues), handle it in two passes:
+
+**Pass 1**: Fetch all issues with `comments(first: 5)` inline
+**Pass 2**: For issues where `comments.totalCount > 5`, fetch remaining comments:
+
+```graphql
+query GetIssueComments($owner: String!, $name: String!,
+                       $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      comments(first: 100, after: $cursor) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          body
+          createdAt
+          author { login }
+        }
+      }
+    }
+  }
+  rateLimit { remaining cost resetAt }
+}
+```
+
+---
+
+## REST Offset Pagination (for REST-Only Endpoints)
+
+### How It Works
+
+REST endpoints use `page` and `per_page` parameters. The `Link` header provides URLs for next/previous pages.
+
+**Key parameters:**
+- `per_page` — 1-100 (default: 30). Always use 100 to minimize requests.
+- `page` — Page number (default: 1)
+
+### Link Header
+
+```
+Link: <https://api.github.com/repos/o/r/issues?page=2&per_page=100>; rel="next",
+      <https://api.github.com/repos/o/r/issues?page=14&per_page=100>; rel="last"
+```
+
+| rel | Meaning |
+|-----|---------|
+| `next` | Next page URL |
+| `prev` | Previous page URL |
+| `first` | First page URL |
+| `last` | Last page URL |
+
+Stop when `rel="next"` is absent.
+
+### Python Implementation (REST)
+
+```python
+def rest_paginated(token, url, params=None):
+    """Paginate through a REST endpoint using Link headers."""
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -63,60 +301,37 @@ def paginated_get(url, token, params=None, max_pages=None):
     params = dict(params or {})
     params["per_page"] = 100
     all_items = []
-    page_count = 0
 
     while url:
-        if max_pages and page_count >= max_pages:
-            break
-
         resp = requests.get(url, headers=headers, params=params)
-        page_count += 1
 
-        # Handle rate limiting (403 or 429)
         if resp.status_code in (403, 429):
-            remaining = int(resp.headers.get("X-RateLimit-Remaining", 0))
-            if remaining == 0:
-                reset_time = int(resp.headers.get("X-RateLimit-Reset", 0))
-                wait = max(reset_time - time.time(), 1)
-                print(f"Rate limited. Waiting {wait:.0f}s until reset...")
-                time.sleep(wait + 1)
-                continue
-            else:
-                # Secondary rate limit — exponential backoff
-                time.sleep(60)
-                continue
+            reset_ts = int(resp.headers.get("X-RateLimit-Reset", 0))
+            wait = max(reset_ts - time.time(), 5)
+            print(f"Rate limited. Waiting {wait:.0f}s...")
+            time.sleep(wait + 1)
+            continue
 
-        # Handle 202 Accepted (stats being computed)
         if resp.status_code == 202:
-            print("Stats being computed, retrying in 3s...")
+            print("Stats computing, retrying in 3s...")
             time.sleep(3)
             continue
 
-        # Handle 204 No Content
-        if resp.status_code == 204:
+        if resp.status_code == 204 or resp.status_code != 200:
             break
 
-        resp.raise_for_status()
         data = resp.json()
-
         if isinstance(data, list):
-            all_items.extend(data)
-            if len(data) == 0:
+            if not data:
                 break
+            all_items.extend(data)
         else:
-            # Some endpoints return objects (e.g., search results)
-            if "items" in data:
-                all_items.extend(data["items"])
-                if len(data["items"]) == 0:
-                    break
-            else:
-                all_items.append(data)
+            all_items.append(data)
 
-        # Parse Link header for next page
+        # Follow Link header
         url = None
-        params = {}  # Link header URLs already include query params
-        link_header = resp.headers.get("Link", "")
-        for part in link_header.split(","):
+        params = {}  # Link URLs include params
+        for part in resp.headers.get("Link", "").split(","):
             if 'rel="next"' in part:
                 url = part.split(";")[0].strip().strip("<>")
                 break
@@ -124,139 +339,141 @@ def paginated_get(url, token, params=None, max_pages=None):
     return all_items
 ```
 
-### Paginating Search Results
-
-Search endpoints have a hard cap of 1,000 results. To collect more:
-
-```python
-def paginated_search(query_base, token, date_ranges):
-    """Partition search by date ranges to exceed 1,000-result limit.
-
-    Args:
-        query_base: Base query string (e.g., "repo:owner/repo is:issue")
-        token: GitHub token
-        date_ranges: List of (start_date, end_date) tuples as "YYYY-MM-DD"
-
-    Returns:
-        All items across all date partitions
-    """
-    all_items = []
-    for start, end in date_ranges:
-        query = f"{query_base} created:{start}..{end}"
-        url = f"https://api.github.com/search/issues?q={query}"
-        items = paginated_get(url, token)
-        all_items.extend(items)
-        time.sleep(2)  # Respect search rate limits (30/min)
-    return all_items
-```
-
 ---
 
 ## Rate Limits
 
-### Primary Rate Limits
+### GraphQL Rate Limits
 
-| Type | Limit | Scope |
-|------|-------|-------|
-| Authenticated (token) | 5,000 requests/hour | Core API |
-| Unauthenticated | 60 requests/hour | Core API |
-| Search (authenticated) | 30 requests/minute | Search endpoints |
-| Code search | 10 requests/minute | `/search/code` |
+| Category | Limit |
+|----------|-------|
+| Authenticated user (PAT/OAuth) | 5,000 points/hour |
+| GitHub Enterprise Cloud | 10,000 points/hour |
+| GitHub App installation | 5,000 (bonus up to 12,500) |
+| GitHub Actions | 1,000 per repo |
+| Burst limit | 2,000 points/minute |
+| Max concurrent requests | 100 (REST + GraphQL combined) |
+| Query timeout | 10 seconds |
 
-### Checking Current Rate Limit
+**Point costs:**
+- Query (no mutation): **1 point**
+- Mutation: **5 points**
+- Complex queries: server estimates total nested API calls / 100 (minimum 1)
 
-```bash
-# This request does NOT count against your rate limit
-curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-  "https://api.github.com/rate_limit" | python3 -m json.tool
-```
+### REST Rate Limits
 
-Response structure:
-```json
-{
-  "resources": {
-    "core": {
-      "limit": 5000,
-      "remaining": 4987,
-      "reset": 1706000000,
-      "used": 13
-    },
-    "search": {
-      "limit": 30,
-      "remaining": 28,
-      "reset": 1706000060,
-      "used": 2
-    }
-  }
+| Category | Limit |
+|----------|-------|
+| Authenticated (Core API) | 5,000 requests/hour |
+| Unauthenticated | 60 requests/hour |
+| Search | 30 requests/minute |
+| Code search | 10 requests/minute |
+
+### Checking Rate Limit
+
+**GraphQL** (include in every query):
+```graphql
+rateLimit {
+  limit         # Max points per hour
+  remaining     # Points left
+  cost          # Points this query consumed
+  resetAt       # ISO 8601 reset time
+  used          # Points used so far
+  nodeCount     # Nodes returned
 }
 ```
 
-### Response Headers on Every Request
+**Standalone check:**
+```graphql
+query { rateLimit { limit remaining resetAt used } }
+```
 
-Every API response includes rate-limit headers:
+**REST** (does not count against limit):
+```bash
+curl -H "Authorization: Bearer $GITHUB_TOKEN" \
+  "https://api.github.com/rate_limit"
+```
+
+### REST Response Headers (on every request)
+
 - `X-RateLimit-Limit` — Max requests for this category
 - `X-RateLimit-Remaining` — Requests remaining
 - `X-RateLimit-Reset` — Unix timestamp when limit resets
 - `X-RateLimit-Used` — Requests used in current window
-- `X-RateLimit-Resource` — Which category (`core`, `search`, etc.)
+- `X-RateLimit-Resource` — Category (`core`, `search`, `graphql`)
+
+### Budget Planning: GraphQL vs REST
+
+| Operation | REST Requests | GraphQL Points | Savings |
+|-----------|--------------|----------------|---------|
+| Repo metadata + topics + langs + README | 4 | **1** | 75% |
+| 1,000 issues (pagination only) | 10 | **10** | Same |
+| 1,000 issues + 5 comments each | 1,010 | **10** | **99%** |
+| 500 PRs + files + reviews | 1,500 | **50** | **97%** |
+| 10-repo comparison | 40 | **1** | **97.5%** |
+| Full repo mining (metadata + 5k commits + 2k issues + 1k PRs) | ~300 | **~90** | **70%** |
+
+### Best Practices
+
+1. **Always authenticate** — GraphQL requires it; REST gets 5,000/hr vs 60
+2. **Include `rateLimit` in every GraphQL query** — monitor budget in real time
+3. **Request only needed fields** — smaller responses, lower point cost
+4. **Use aliases for batch queries** — 10 repos = 1 point, not 10
+5. **Use `gh --paginate`** for CLI scripts — automatic cursor handling
+6. **Cache to disk** — save raw JSON; avoid re-fetching unchanged data
+7. **Use conditional requests (REST)** — `If-None-Match` with ETags for 304 responses
+8. **Respect burst limits** — max 2,000 points/minute; add small delays in loops
+9. **Date-partition searches** — search cap is 1,000 results; split by `created:` ranges
+10. **Start with small `first:` for nested connections** — `comments(first: 5)` inline, paginate separately if needed
 
 ### Handling Rate Limit Errors
 
-When you hit the limit, GitHub returns `403 Forbidden` with body:
+**GraphQL**: Returns `200 OK` with error in response body:
+```json
+{
+  "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]
+}
+```
+
+**REST**: Returns `403 Forbidden` with body:
 ```json
 {"message": "API rate limit exceeded for user ID ..."}
 ```
 
-**Implementation pattern**:
+**Recovery pattern:**
 ```python
-def wait_for_rate_limit(response):
-    """Check response and wait if rate-limited."""
-    remaining = int(response.headers.get("X-RateLimit-Remaining", 1))
-    if remaining == 0 or response.status_code in (403, 429):
-        reset_ts = int(response.headers.get("X-RateLimit-Reset", 0))
-        wait_seconds = max(reset_ts - time.time(), 1)
-        print(f"Rate limited. Waiting {wait_seconds:.0f} seconds...")
-        time.sleep(wait_seconds + 1)  # +1s buffer
-        return True
-    return False
+def handle_rate_limit(response_or_data):
+    """Wait for rate limit reset."""
+    # For REST
+    if hasattr(response_or_data, 'headers'):
+        reset_ts = int(response_or_data.headers.get("X-RateLimit-Reset", 0))
+        wait = max(reset_ts - time.time(), 5)
+    # For GraphQL
+    elif "rateLimit" in response_or_data.get("data", {}):
+        reset_at = response_or_data["data"]["rateLimit"]["resetAt"]
+        # Parse ISO 8601 and compute wait
+        from datetime import datetime, timezone
+        reset_dt = datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
+        wait = max((reset_dt - datetime.now(timezone.utc)).total_seconds(), 5)
+    else:
+        wait = 60
+
+    print(f"Rate limited. Waiting {wait:.0f}s...")
+    time.sleep(wait + 1)
 ```
 
-### Conditional Requests (Save Rate Limit Budget)
+### Overcoming the 1,000-Result Search Limit
 
-Use ETags to avoid counting unchanged responses:
+Search endpoints (both GraphQL and REST) cap at 1,000 results. Strategies:
 
-```python
-# First request — save the ETag
-resp = requests.get(url, headers=headers)
-etag = resp.headers.get("ETag")
+1. **Date partitioning** — split by `created:` ranges:
+   ```
+   created:2024-01-01..2024-03-31
+   created:2024-04-01..2024-06-30
+   created:2024-07-01..2024-09-30
+   created:2024-10-01..2024-12-31
+   ```
 
-# Subsequent request — use If-None-Match
-headers["If-None-Match"] = etag
-resp = requests.get(url, headers=headers)
-if resp.status_code == 304:
-    # Not modified — use cached data
-    # This request does NOT count against rate limit
-    pass
-```
+2. **Label partitioning** — separate queries per label
 
-### Budget Planning
-
-For a typical mining session targeting one large repository:
-
-| Data Type | Estimated Requests | Notes |
-|-----------|-------------------|-------|
-| Repo metadata | 1 | Single GET |
-| File tree | 1 | Single recursive GET |
-| Contributors | 1-5 | Depends on contributor count |
-| Contributor stats | 1-3 | May need retries for 202 |
-| Commits (full history) | N/100 pages | 10,000 commits = 100 requests |
-| Issues (all) | N/100 pages | 5,000 issues = 50 requests |
-| Issue comments (all) | N/100 per issue | Most expensive — consider sampling |
-| Pull requests (all) | N/100 pages | Similar to issues |
-| Activity stats | 4 | One per stats endpoint |
-| **Typical total** | **200-2,000** | Well within 5,000/hour |
-
-**Warning**: Fetching comments for EVERY issue/PR individually can be very expensive. Consider:
-1. Using `GET /repos/{owner}/{repo}/issues/comments` (bulk endpoint) instead
-2. Sampling: only fetch comments for a random subset of issues
-3. Filtering: only fetch comments for issues matching specific labels
+3. **Use list endpoints instead** — for single-repo data, `repository.issues` and `repository.pullRequests` paginate without limit (unlike `search`)

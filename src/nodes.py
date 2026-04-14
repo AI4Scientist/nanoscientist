@@ -100,51 +100,42 @@ class BudgetPlanner(Node):
             if parts:
                 quality_guidance = "\n\n## Paper Quality Standard (excerpt)\n" + "\n\n".join(parts)
 
-        prompt = f"""You are a research planning assistant. Given a research topic and a dollar budget for LLM inference, produce an ordered plan of research skills to execute.
+        # Compute approximate affordable steps and report tier
+        affordable = max(1, int((prep_res["budget"] - 0.03) / 0.005))
+        if prep_res["budget"] < 0.10:
+            tier = "Quick Summary — 1-2 skills"
+        elif prep_res["budget"] < 0.50:
+            tier = "Literature Review — 3-6 skills"
+        elif prep_res["budget"] < 2.00:
+            tier = "Research Report — 10-20 skills"
+        elif prep_res["budget"] < 5.00:
+            tier = "Full Paper — 30-50 skills"
+        else:
+            tier = "Full Paper — 50+ skills, exhaustive coverage"
 
-## Research Topic
+        prompt = f"""You are a research planning assistant. Produce an ordered skill execution plan for the given topic and budget.
+
+## Topic
 {prep_res["topic"]}
 
-## Budget
-${prep_res["budget"]:.2f} USD
-
-## Cost Model
-Each skill execution costs roughly $0.003-$0.005.
-Each planning/decision step costs roughly $0.001.
-The final LaTeX report generation costs roughly $0.01.
-Always reserve $0.03 for the final report + compilation.
-IMPORTANT: Plan MANY steps to use the budget effectively. A $1 budget supports ~200 skill calls. A $20 budget supports ~4000 skill calls.
+## Budget: ${prep_res["budget"]:.2f} (~{affordable} skill calls at $0.005 each; reserve $0.03 for report)
+## Target: {tier}
 
 ## Available API Keys
 {prep_res["api_keys"]}
 
-Only plan skills whose required API keys are available. Do not plan skills that depend on missing keys.
-
 ## Available Skills
 {prep_res["skills"]}
 
-## Budget Strategy Guidelines
-- Budget < $0.10: research-lookup (1 call), then write report (Quick Summary).
-- Budget $0.10-$0.50: research-lookup (2-3 calls on subtopics) + literature-review, then write report (Literature Review).
-- Budget $0.50-$2.00: research-lookup (3-5 calls) + literature-review + hypothesis-generation + scientific-critical-thinking. Plan 10-20 steps (Research Report).
-- Budget $2.00-$5.00: Plan 30-50 steps. Multiple research-lookup calls (8-15, each on different subtopics), 3-5 literature-review passes on subtopics, 3-5 github-mining or data collection passes, 4-6 statistical-analysis passes, 3-4 data-visualization passes, hypothesis-generation, scientific-critical-thinking, peer-review, citation-management, venue-templates (Full Paper).
-- Budget $5.00-$10.00: Plan 50-80 steps. All of the above with MORE repetitions. 15-20 research-lookup, 5-8 literature-review, 6-10 data collection, 6-10 statistical-analysis, 5-8 data-visualization. Use the budget to build deep, comprehensive research.
-- Budget $10.00+: Plan 80-150 steps. Exhaustive coverage with repeated deep-dives into every subtopic.
-
-## Key Planning Rules
-1. CRITICAL: Plan enough steps to use at least 70% of the budget. Each step costs ~$0.005, so a $5 budget should have ~40+ planned steps, a $10 budget ~80+ steps.
-2. Use research-lookup MULTIPLE TIMES with different queries — one per subtopic or research question angle.
-3. Use literature-review on specific subtopics, not just the broad topic. Plan separate literature-review steps for each major theme.
-4. Use data-visualization MULTIPLE TIMES — one per research question or figure type.
-5. Use statistical-analysis MULTIPLE TIMES — one per analysis method or hypothesis.
-6. Every skill execution builds material and citations for the final report — more executions = better paper.
-7. The decision engine can extend the plan beyond what you specify here, but a comprehensive initial plan is critical for guiding research direction.
+## Rules
+- Only plan skills whose required API keys are available.
+- Use research-lookup multiple times with different subtopic queries.
+- Use literature-review, data-visualization, statistical-analysis multiple times for depth.
+- Plan enough steps to use ≥70% of the budget.
 {quality_guidance}
 
 ## Instructions
-Produce a YAML plan. Each step has: step number, skill name, and a short reason.
-Only include skills that fit within the budget after reserving $0.03 for the report.
-Plan should produce enough material for the report type matching this budget tier.
+Produce a YAML plan. Each step: step number, skill name, short reason. Reserve $0.03 for the final report.
 
 ```yaml
 domain: <one-line topic classification>
@@ -278,34 +269,24 @@ class DecideNext(Node):
 
         prompt = f"""You are the decision engine of an autonomous research agent.
 
-## Research Topic
-{prep_res["topic"]}
-
-## Completed Steps
+## Topic: {prep_res["topic"]}
+## Budget remaining: ${prep_res["budget_remaining"]:.4f} (~{affordable_steps} more skill calls; reserve $0.03)
+## Artifacts: {', '.join(prep_res["artifact_keys"]) if prep_res["artifact_keys"] else 'none'}
+{figure_nudge}
+## Completed steps
 {prep_res["history"]}
 
-## Remaining Planned Steps
+## Remaining planned steps
 {remaining_yaml}
 
-## Budget Remaining
-${prep_res["budget_remaining"]:.4f} (reserve $0.03 for final report)
-Estimated affordable additional skill calls: {affordable_steps}
-
-## Artifacts Collected
-{', '.join(prep_res["artifact_keys"]) if prep_res["artifact_keys"] else 'None yet.'}
-{figure_nudge}
-## Available Skills (for extending the plan)
+## Available skills (for unplanned deepening)
 {prep_res["available_skills"]}
 
-## Instructions
-Decide the next action. You may:
-1. Execute a planned skill ("execute_skill") — pick from remaining plan
-2. Execute an ADDITIONAL skill ("execute_skill") — if the plan is done but budget allows deeper research, propose a skill to strengthen the paper (e.g., repeat research-lookup with different angles, add peer-review, add scientific-critical-thinking, deepen literature-review on subtopics, additional data-visualization or statistical-analysis passes)
-3. Write the final report ("write_tex") — ONLY when BOTH conditions are met:
-   a. You have comprehensive material (20+ citations for Full Paper, figures, tables, all RQs addressed)
-   b. Less than 10 affordable steps remain OR budget utilization exceeds 70%
-
-**CRITICAL**: You MUST continue executing skills if budget utilization is below 60%. Each additional skill call deepens the research quality. Propose NEW angles, deeper analysis, additional visualizations, or cross-validation steps. NEVER stop early with substantial budget remaining — the user is paying for thorough research.
+## Rules
+- If planned steps remain → execute the next one ("execute_skill").
+- If plan done but ≥10 affordable calls remain → add a deepening skill ("execute_skill").
+- Write the report ("write_tex") only when <10 affordable calls remain OR budget >70% used AND sufficient material exists.
+- Never stop early with substantial budget remaining.
 
 Return YAML:
 ```yaml
@@ -793,142 +774,74 @@ class WriteTeX(Node):
 
         cite_list = ", ".join(prep_res["cite_keys"]) if prep_res["cite_keys"] else "No citations available."
 
-        # Build quality guidance block
-        quality_block = ""
-        if prep_res["writing_guide"]:
-            quality_block = f"""
-## Paper Quality Standard
-You MUST follow these quality standards when writing. This is non-negotiable.
-
-{prep_res["writing_guide"]}
-"""
-
-        # Build figure inclusion block
-        figure_block = ""
+        # Lean context blocks — only include when non-empty
+        extras = []
+        if prep_res.get("writing_guide"):
+            extras.append(f"## Quality Standard\n{prep_res['writing_guide']}")
         if prep_res.get("figure_files"):
-            figure_list = "\n".join(f"- {f}" for f in prep_res["figure_files"])
-            figure_block = f"""
-## Available Figures
-The following figures have been generated during research and are available for inclusion.
-You MUST include them in the paper where they support the narrative.
-{figure_list}
-
-To include a figure, use this LaTeX pattern:
-\\begin{{figure}}[htbp]
-\\centering
-\\includegraphics[width=0.8\\textwidth]{{figures/<filename>}}
-\\caption{{Your descriptive caption here.}}
-\\label{{fig:<short-label>}}
-\\end{{figure}}
-
-Reference each figure in the text as Figure~\\ref{{fig:<label>}}.
-"""
-
-        # Build data files context with previews for inline table generation
-        data_block = ""
-        if prep_res.get("data_files"):
-            data_list = "\n".join(f"- {f}" for f in prep_res["data_files"])
-            data_block = f"""
-## Collected Data Files
-The following data files were collected during research. Reference their contents in your Methods and Results sections:
-{data_list}
-"""
-            # Add data previews for table generation
-            if prep_res.get("data_previews"):
-                previews = []
-                for fname, preview in prep_res["data_previews"].items():
-                    previews.append(f"### {fname}\n```\n{preview[:1000]}\n```")
-                data_block += "\n### Data Previews\n" + "\n".join(previews) + "\n"
-
-        # Table generation instructions (inline, no separate node needed)
-        tables_block = """
-## Table Generation
-You MUST include 2-3 summary tables in appropriate sections (Results or Background).
-Use booktabs style: \\\\toprule, \\\\midrule, \\\\bottomrule (no vertical lines).
-Wrap in \\\\begin{table}[htbp] with \\\\centering, \\\\caption, and \\\\label{tab:...}.
-Extract real data from the artifacts and data files — do NOT fabricate numbers.
-Reference each table in the text as Table~\\\\ref{tab:label}.
-"""
+            figs = "\n".join(f"- {f}" for f in prep_res["figure_files"])
+            extras.append(
+                f"## Figures (include all in body)\n{figs}\n"
+                "Pattern: \\\\begin{{figure}}[htbp]\\\\centering"
+                "\\\\includegraphics[width=0.8\\\\textwidth]{{figures/<name>}}"
+                "\\\\caption{{...}}\\\\label{{fig:<label>}}\\\\end{{figure}}"
+            )
+        if prep_res.get("data_previews"):
+            previews = "\n".join(
+                f"### {fn}\n```\n{txt[:800]}\n```"
+                for fn, txt in prep_res["data_previews"].items()
+            )
+            extras.append(f"## Data Previews (use for tables/results)\n{previews}")
+        elif prep_res.get("data_files"):
+            extras.append("## Data Files\n" + "\n".join(f"- {f}" for f in prep_res["data_files"]))
+        extra_block = ("\n\n" + "\n\n".join(extras)) if extras else ""
 
         prompt = f"""You are writing a scientific {report_type.lower()} as compilable LaTeX.
-{quality_block}
-## Research Topic
-{prep_res["topic"]}
 
-## Research Artifacts (your source material)
+## Topic: {prep_res["topic"]}
+## Type: {report_type} | Sections: {', '.join(sections)}
+
+## Research Artifacts
 {artifact_text}
 
 ## Available BibTeX cite keys
-{cite_list}
-{figure_block}{data_block}{tables_block}
-## Report Type: {report_type}
-## Sections to Write: {', '.join(sections)}
+{cite_list}{extra_block}
 
-## STRUCTURAL RULES
-1. **Title**: Specific, descriptive, under 15 words. Captures the central contribution.
-2. **Abstract**: 150-250 words, self-contained, follows Context-Content-Conclusion structure. States problem, approach, findings, significance.
-3. **Introduction**: Progress from broad context to specific gap. End with clear contribution statement.
-4. **Background/Related Work**: Synthesize prior work by theme, not just list papers. Identify what is missing.
-5. **Discussion**: Interpret results, compare with prior work, acknowledge limitations honestly.
-6. **Conclusion**: 1-2 paragraphs max. State how work advances the field. Do NOT repeat the abstract.
+## Rules
+- Write ONLY LaTeX body (no \\documentclass/\\usepackage/\\begin{{document}}).
+- Standard commands only: \\section, \\subsection, \\textbf, \\textit, \\cite, \\ref, itemize, enumerate, equation, table, tabular, figure.
+- Use \\cite{{key}} with keys listed above only. Every claim needs a citation.
+- Active voice, formal tone, full prose paragraphs (no bullet points in body).
+- Escape special chars: \\%, \\&, \\#, \\$.
+- Abstract: 150-250 words, self-contained.
+- Background: synthesize by theme, not paper-by-paper.
+- Include 2-3 booktabs tables (\\toprule/\\midrule/\\bottomrule) from real artifact data.
+- Every \\cite{{key}} in body MUST have a matching BibTeX entry below.
 
-## WRITING RULES
-- Every paragraph follows Context-Content-Conclusion: first sentence sets context, body presents content, last sentence gives takeaway.
-- Active voice preferred: "We propose X" not "X is proposed."
-- No unsupported claims — every assertion needs \\cite{{key}} or evidence.
-- Formal academic tone. No colloquialisms, contractions, or casual phrasing.
-- Technical terms defined on first use.
-
-## LATEX RULES
-1. Write ONLY the LaTeX body content for each section.
-2. Use \\cite{{key}} for citations (only keys listed above).
-3. Do NOT include \\documentclass, \\usepackage, \\begin{{document}}, or \\end{{document}}.
-4. Do NOT use any custom commands or undefined macros.
-5. Only use standard LaTeX commands: \\section, \\subsection, \\textbf, \\textit, \\cite, \\ref, itemize, enumerate, equation, table, tabular, figure environments.
-6. Write in full academic prose paragraphs, not bullet points.
-7. Escape special characters: use \\% for percent, \\& for ampersand, etc.
-
-## Output Format
-Return your content between markers like this:
+Return content between these markers:
 
 %%BEGIN TITLE%%
-<the paper title — specific, under 15 words>
+<specific title, under 15 words>
 %%END TITLE%%
 
 %%BEGIN ABSTRACT%%
-<abstract text — 150-250 words, C-C-C structure, no \\begin{{abstract}} tags>
+<150-250 word abstract>
 %%END ABSTRACT%%
 
 %%BEGIN BODY%%
 \\section{{Introduction}}
-<introduction: broad context → specific gap → contribution statement>
-
-\\section{{Background}}
-<background: synthesize prior work by theme, cite extensively>
-
-... (include only sections listed above)
-
+...
 \\section{{Conclusion}}
-<conclusion: concise synthesis, how this advances the field>
 %%END BODY%%
 
 %%BEGIN BIBTEX%%
-@article{{citekey1,
+@article{{key,
   author = {{Last, First}},
-  title = {{Paper Title}},
-  journal = {{Journal Name}},
-  year = {{2024}},
-  volume = {{1}},
-  pages = {{1--10}}
+  title = {{Title}},
+  journal = {{Venue}},
+  year = {{YYYY}}
 }}
-... (one BibTeX entry for EVERY \\cite{{key}} used in the body)
 %%END BIBTEX%%
-
-## CRITICAL: BibTeX Requirements
-- You MUST include a %%BEGIN BIBTEX%% ... %%END BIBTEX%% section.
-- Every \\cite{{key}} in the body MUST have a matching @article/@inproceedings entry in the BIBTEX section.
-- Use realistic metadata: real author names, real paper titles, real venues, accurate years.
-- Cite keys must match exactly between \\cite{{}} and @type{{key, ...}}.
 
 Write the report now."""
         text, usage = call_llm(prompt)

@@ -1,8 +1,10 @@
 # Nanoscientist
 
-**An autonomous research agent that reads a topic, runs a skill loop, and writes a compiled PDF paper — all within a dollar budget you set.**
+> **Nano. Lean. One loop, one metric, one paper.**
 
-Built on [PocketFlow](https://github.com/The-Pocket/PocketFlow). Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch): one loop, one metric, minimal overhead.
+An autonomous research agent that turns a topic into a compiled PDF — within a dollar budget you set. The entire agent is ~4 files, ~7 nodes, ~20 skills. No framework bloat, no orchestration overhead.
+
+Built on [PocketFlow](https://github.com/The-Pocket/PocketFlow). Directly inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch): fix the budget, run the loop, let the agent figure out the rest.
 
 ## How it works
 
@@ -23,7 +25,9 @@ BudgetPlanner → DecideNext ↔ ExecuteSkill (loop)
 | **CompileTeX** | Runs `pdflatex` + `bibtex` to produce a PDF |
 | **FixTeX** | Patches undefined citations or LaTeX errors and recompiles |
 
-The agent spends as much of the budget as possible before writing. Each skill call costs ~$0.005; the final report costs ~$0.01.
+**Why nano?** The core is intentionally tiny — 4 source files, ~800 lines total. Each skill is a single markdown file read on demand. No databases, no queues, no config YAML. The budget is the only knob.
+
+Each skill call costs ~$0.005; the final report ~$0.01. The agent runs until the budget is spent, then writes.
 
 ## Quickstart
 

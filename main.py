@@ -11,7 +11,6 @@ import argparse
 import sys
 
 from pathlib import Path
-from src import __version__
 from src.utils import init_env, load_skill_index, filter_skill_index, detect_api_keys
 from src.flow import create_scientist_flow
 
@@ -78,16 +77,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-
   python main.py "What are CRISPR off-target effects?" --budget 1.00
   python main.py "Latest in quantum error correction" --budget 0.05
   python main.py topic.md --budget 1.00
   python main.py --list-skills
         """,
-    )
-    parser.add_argument(
-        "--version", "-V", action="version",
-        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "topic", nargs="?",

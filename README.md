@@ -2,6 +2,8 @@
 
 > **Nano. Lean. Two loops, one budget, one paper.**
 
+<img width="1200" height="800" alt="Nanoscientist" src="https://github.com/user-attachments/assets/fadce36b-34c2-4649-97f0-16c257b55d3d" />
+
 An autonomous research agent that turns a topic into a peer-reviewed, compiled PDF — within a dollar budget you set. The entire agent is ~4 files, 7 nodes, ~20 skills. No framework bloat, no orchestration overhead.
 
 Built on [PocketFlow](https://github.com/The-Pocket/PocketFlow). Directly inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch): fix the budget, run the loops, let the agent figure out the rest.

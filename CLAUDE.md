@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 ## Project
-Autonomous research agent. Takes a topic + dollar budget, runs research/writing/review loops, outputs a compiled PDF.
+Nano-scientist autonomous research agent. Takes a topic + dollar budget, runs research/writing/review loops, outputs a compiled PDF.
 
 ## Run
 ```bash

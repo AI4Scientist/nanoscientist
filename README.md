@@ -1,8 +1,8 @@
-# Nanoscientist
+# Nano-scientist
 
 > **Nano. Lean. Two loops, one budget, one paper.**
 
-<img width="1200" height="800" alt="Nanoscientist" src="https://github.com/user-attachments/assets/fadce36b-34c2-4649-97f0-16c257b55d3d" />
+<img width="1200" height="800" alt="Nano-scientist" src="https://github.com/user-attachments/assets/fadce36b-34c2-4649-97f0-16c257b55d3d" />
 
 An autonomous research agent that turns a topic into a peer-reviewed technical report — within a dollar budget you set. The entire agent is ~4 files, 8 nodes, ~20 skills. No framework bloat, no orchestration overhead.
 
@@ -64,8 +64,8 @@ flowchart TD
 
 ```bash
 # 1. Clone
-git clone https://github.com/your-org/nanoscientist
-cd nanoscientist
+git clone https://github.com/your-org/nano-scientist
+cd nano-scientist
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -205,7 +205,7 @@ Optional tuning variables (set in `.env` or shell):
 ## Project layout
 
 ```
-nanoscientist/
+nano-scientist/
 ├── main.py              # CLI entry point
 ├── src/
 │   ├── flow.py          # PocketFlow wiring (7 nodes)
@@ -225,13 +225,13 @@ nanoscientist/
 
 ## 📌 Citation
 
-If you use Nanoscientist in your research, please cite:
+If you use Nano-scientist in your research, please cite:
 
 ```bibtex
-@software{nanoscientist2026,
-  title  = {Nanoscientist: Autonomous Research Agent for Budget-Constrained Scientific Reports},
+@software{nano_scientist2026,
+  title  = {Nano-scientist: Autonomous Research Agent for Budget-Constrained Scientific Reports},
   author = {{AI4Scientist Team}},
   year   = {2026},
-  url    = {https://github.com/AI4Scientist/nanoscientist}
+  url    = {https://github.com/AI4Scientist/nano-scientist}
 }
 ```

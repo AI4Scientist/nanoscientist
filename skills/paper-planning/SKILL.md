@@ -138,6 +138,12 @@ The teaser (usually Figure 1) shows the key result at a glance:
 - Should be immediately compelling
 - Reference it from the Introduction
 
+### Study Workflow Diagram
+
+Most papers benefit from a **study workflow diagram** — a high-level figure showing the overall research design (data collection → preprocessing → method → evaluation). This is distinct from the pipeline figure (which shows the technical method) and often appears as Figure 1 or in the Experiments section.
+
+To generate a polished workflow diagram as an image, use the `gpt-image-2` skill: provide a plain-text description of the workflow stages and it will produce a PNG suitable for inclusion in the paper. See [skills/gpt-image-2/SKILL.md](../gpt-image-2/SKILL.md) for CLI usage and prompt-craft references.
+
 ### Visual Quality Matters
 
 Visual polish directly influences review outcomes. See [references/figure-design.md](references/figure-design.md) for the full visual quality guide (pipeline figures, tables, typography)
@@ -189,6 +195,7 @@ When planning is complete, pass these artifacts to `paper-writing`:
 | Figure design | [figure-design.md](references/figure-design.md) | Designing pipeline/teaser figures |
 | Experiment plan template | [experiment-plan-template.md](assets/experiment-plan-template.md) | Creating a structured experiment plan |
 | Counterintuitive strategy | [counterintuitive-planning.md](references/counterintuitive-planning.md) | Increasing acceptance odds with non-obvious planning choices |
+| Study workflow diagram | [gpt-image-2/SKILL.md](../gpt-image-2/SKILL.md) | Generating a polished workflow diagram image via GPT Image 2 |
 
 ## Handoff to Presentation
 

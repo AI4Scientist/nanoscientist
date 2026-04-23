@@ -21,8 +21,8 @@
       "description": "Structured 4-stage experiment execution: baseline reproduction, hyperparameter tuning, proposed method validation, ablation study. Integrates with evo-memory and experiment-craft."
     },
     {
-      "id": "nano-banana",
-      "description": "Generate professional presentation slides as images via Gemini image generation API with interactive browser review, iterative editing, and PPTX packaging."
+      "id": "gpt-image-2",
+      "description": "Generate and edit images via OpenAI gpt-image-2: text-to-image generation, reference-image editing, multi-reference compositing, and masked inpainting. Writes PNG/JPEG/WebP to disk."
     },
     {
       "id": "paper-navigator",

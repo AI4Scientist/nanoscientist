@@ -1,11 +1,12 @@
 """Utility functions for the Autonomous Scientist agent."""
 
+import asyncio
 import json
 import os
 import re
 import yaml
 from pathlib import Path
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from dotenv import load_dotenv
 
 try:
@@ -95,17 +96,25 @@ def count_tokens(text: str) -> int:
     return int(len(text.split()) * 1.3)
 
 
+_EST_AVG_PROMPT_TOKENS  = int(os.environ.get("EST_AVG_PROMPT_TOKENS",  "500"))
+_EST_AVG_OUTPUT_TOKENS  = int(os.environ.get("EST_AVG_OUTPUT_TOKENS",  "300"))
+
+
 def estimate_calls_remaining(
     budget_remaining: float,
     cost_log: list = None,
-    avg_prompt_tokens: int = 500,
-    avg_output_tokens: int = 300,
+    avg_prompt_tokens: int = None,
+    avg_output_tokens: int = None,
 ) -> int:
     """Estimate how many LLM calls remain given current budget.
 
     If cost_log is provided, derives the average cost-per-call from actual
     observed usage rather than the hardcoded defaults.
     """
+    if avg_prompt_tokens is None:
+        avg_prompt_tokens = _EST_AVG_PROMPT_TOKENS
+    if avg_output_tokens is None:
+        avg_output_tokens = _EST_AVG_OUTPUT_TOKENS
     if cost_log:
         real_calls = [e for e in cost_log if e.get("input_tokens", 0) > 0]
         if real_calls:
@@ -226,6 +235,11 @@ def call_llm(
     }
 
 
+_TOOL_DEFAULT_TIMEOUT = int(os.environ.get("TOOL_DEFAULT_TIMEOUT", "60"))
+_TOOL_MAX_TIMEOUT     = int(os.environ.get("TOOL_MAX_TIMEOUT",     "300"))
+_TOOL_STDOUT_LIMIT    = int(os.environ.get("TOOL_STDOUT_LIMIT",    "4000"))
+_TOOL_STDERR_LIMIT    = int(os.environ.get("TOOL_STDERR_LIMIT",    "1000"))
+
 # Tool definition exposed to the model for Bash execution
 _BASH_TOOL = {
     "type": "function",
@@ -241,8 +255,8 @@ _BASH_TOOL = {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default 60, max 300).",
-                    "default": 60,
+                    "description": f"Timeout in seconds (default {_TOOL_DEFAULT_TIMEOUT}, max {_TOOL_MAX_TIMEOUT}).",
+                    "default": _TOOL_DEFAULT_TIMEOUT,
                 },
             },
             "required": ["command"],
@@ -256,7 +270,9 @@ def _execute_tool_call(tool_name: str, arguments: dict, cwd: str) -> str:
     import subprocess
     if tool_name == "bash":
         command = arguments.get("command", "")
-        timeout = min(int(arguments.get("timeout", 60)), 300)
+        # Strip leading `sleep N` calls — they waste tool rounds and cause timeouts.
+        command = re.sub(r"^\s*sleep\s+\d+\s*&&\s*", "", command)
+        timeout = min(int(arguments.get("timeout", _TOOL_DEFAULT_TIMEOUT)), _TOOL_MAX_TIMEOUT)
         try:
             r = subprocess.run(
                 command, shell=True, cwd=cwd,
@@ -264,8 +280,8 @@ def _execute_tool_call(tool_name: str, arguments: dict, cwd: str) -> str:
                 errors="replace", timeout=timeout,
                 env={**os.environ},
             )
-            out = r.stdout[:4000]
-            err = r.stderr[:1000]
+            out = r.stdout[:_TOOL_STDOUT_LIMIT]
+            err = r.stderr[:_TOOL_STDERR_LIMIT]
             result = f"exit={r.returncode}"
             if out:
                 result += f"\n{out}"
@@ -371,6 +387,171 @@ def call_llm_with_tools(
 
         if round_i == max_tool_rounds - 1:
             print(f"[call_llm_with_tools] Reached max_tool_rounds={max_tool_rounds}, stopping.")
+            return final_text, {
+                "input_tokens": total_input,
+                "output_tokens": total_output,
+                "cost": total_cost,
+                "estimated_input_tokens": total_input,
+                "tool_rounds_exhausted": True,
+            }
+
+    return final_text, {
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "cost": total_cost,
+        "estimated_input_tokens": total_input,
+        "tool_rounds_exhausted": False,
+    }
+
+
+def get_async_client() -> AsyncOpenAI:
+    """Create async OpenAI-compatible client from env config."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "OPENROUTER_API_KEY not found.\n"
+            "Add to your .env file:\n"
+            "  OPENROUTER_API_KEY=sk-or-v1-your-key-here\n"
+            "Get one at https://openrouter.ai/keys"
+        )
+    return AsyncOpenAI(
+        base_url=_get_base_url(),
+        api_key=api_key,
+    )
+
+
+async def call_llm_async(
+    prompt: str,
+    system: str = None,
+    budget_remaining: float = None,
+    allow_tools: bool = False,
+    cost_log: list = None,
+) -> tuple[str, dict]:
+    """Async version of call_llm."""
+    calls_left = estimate_calls_remaining(budget_remaining or 0, cost_log=cost_log)
+    budget_ctx = _SYSTEM_PROMPT_TEMPLATE.format(calls=calls_left)
+    full_system = budget_ctx + ("\n\n" + system if system else "")
+    est_input = count_tokens(full_system) + count_tokens(prompt)
+
+    client = get_async_client()
+    messages = [
+        {"role": "system", "content": full_system},
+        {"role": "user", "content": prompt},
+    ]
+    kwargs = {"model": _get_model(), "messages": messages}
+    if not allow_tools:
+        kwargs["tool_choice"] = "none"
+
+    try:
+        response = await client.chat.completions.create(**kwargs)
+    except Exception as e:
+        if not allow_tools and ("tool_choice" in str(e).lower() or getattr(getattr(e, "response", None), "status_code", None) == 400):
+            response = await client.chat.completions.create(model=_get_model(), messages=messages)
+        else:
+            raise
+
+    choice = response.choices[0]
+    text = choice.message.content or ""
+    if not allow_tools:
+        if not text and choice.message.tool_calls:
+            text = "\n".join(
+                tc.function.arguments for tc in choice.message.tool_calls
+                if tc.function and tc.function.arguments
+            )
+        text = re.sub(r"<[a-zA-Z0-9_:]+:tool_call>.*?</[a-zA-Z0-9_:]+:tool_call>", "", text, flags=re.DOTALL)
+        text = re.sub(r"</?[a-zA-Z0-9_:]+:tool_call[^>]*>", "", text)
+    usage = response.usage
+    input_tokens = usage.prompt_tokens if usage else est_input
+    output_tokens = usage.completion_tokens if usage else count_tokens(text)
+    cost = (
+        input_tokens * _get_input_cost() / 1_000_000
+        + output_tokens * _get_output_cost() / 1_000_000
+    )
+    return text, {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost": cost,
+        "estimated_input_tokens": est_input,
+    }
+
+
+async def call_llm_with_tools_async(
+    prompt: str,
+    system: str = None,
+    budget_remaining: float = None,
+    cwd: str = ".",
+    max_tool_rounds: int = None,
+    cost_log: list = None,
+) -> tuple[str, dict]:
+    """Async version of call_llm_with_tools. Tool execution runs in a thread pool."""
+    if max_tool_rounds is None:
+        max_tool_rounds = int(os.environ.get("MAX_TOOL_ROUNDS", "16"))
+    calls_left = estimate_calls_remaining(budget_remaining or 0, cost_log=cost_log)
+    budget_ctx = _SYSTEM_PROMPT_TEMPLATE.format(calls=calls_left)
+    full_system = budget_ctx + ("\n\n" + system if system else "")
+
+    client = get_async_client()
+    messages = [
+        {"role": "system", "content": full_system},
+        {"role": "user", "content": prompt},
+    ]
+
+    total_input = count_tokens(full_system) + count_tokens(prompt)
+    total_output = 0
+    total_cost = 0.0
+    final_text = ""
+
+    for round_i in range(max_tool_rounds):
+        try:
+            response = await client.chat.completions.create(
+                model=_get_model(),
+                messages=messages,
+                tools=[_BASH_TOOL],
+                tool_choice="auto",
+            )
+        except Exception as e:
+            if "tool" in str(e).lower() or getattr(getattr(e, "response", None), "status_code", None) == 400:
+                plain_text, plain_usage = await call_llm_async(prompt, system=system, budget_remaining=budget_remaining)
+                return plain_text, plain_usage
+            raise
+
+        usage = response.usage
+        if usage:
+            total_input += usage.prompt_tokens
+            total_output += usage.completion_tokens
+            total_cost += (
+                usage.prompt_tokens * _get_input_cost() / 1_000_000
+                + usage.completion_tokens * _get_output_cost() / 1_000_000
+            )
+
+        choice = response.choices[0]
+        msg = choice.message
+        if msg.content:
+            final_text = msg.content
+        if not msg.tool_calls:
+            break
+
+        messages.append(msg)
+        tool_results = []
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, AttributeError):
+                args = {}
+            # Run blocking tool execution in thread pool to not block event loop
+            output = await asyncio.get_event_loop().run_in_executor(
+                None, _execute_tool_call, tc.function.name, args, cwd
+            )
+            print(f"[tool:{tc.function.name}] {str(args.get('command',''))[:60]} → {output[:80]}")
+            tool_results.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": output,
+            })
+        messages.extend(tool_results)
+
+        if round_i == max_tool_rounds - 1:
+            print(f"[call_llm_with_tools_async] Reached max_tool_rounds={max_tool_rounds}, stopping.")
             return final_text, {
                 "input_tokens": total_input,
                 "output_tokens": total_output,

@@ -1,0 +1,1 @@
+GitHub issue taxonomy for the Lean 4 theorem prover: clustering, labeling, and trend analysis across open and closed issues.

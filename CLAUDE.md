@@ -48,7 +48,9 @@ LaTeX compilation runs **exactly once**, as the final PDF generation step.
 `plan` format: `[{"id": int, "type": "research"|"write", "task": str, "skill": str, "section": str (write steps only), "status": "pending"|"in_progress"|"done"|"failed"}]`
 
 ## Budget reserves
-| Constant | Value | Purpose |
+All values are overridable via env vars (same name). Defaults live in `_DEFAULTS` in `src/nodes.py`.
+
+| Env var | Default | Purpose |
 |---|---|---|
 | `BUDGET_RESERVE` | $0.03 | research → writing threshold |
 | `WRITE_RESERVE` | $0.015 | writing → review threshold |
@@ -60,6 +62,17 @@ Optional (skill-gated): `HF_TOKEN`, `GITHUB_TOKEN`, `OPENAI_API_KEY`.
 MCP (optional): `PERPLEXITY_API_KEY` (perplexity server), `CONTEXT7_API_KEY` (context7 server, optional even within MCP).
 Inference: `MODEL_NAME`, `INFERENCE_BASE_URL`, `INPUT_TOKEN_COST_PER_MILLION`, `OUTPUT_TOKEN_COST_PER_MILLION`.
 Agent: `LOOKBACK` (default 3), `MAX_REVIEW_ROUNDS` (default 1), `MAX_TOOL_ROUNDS` (default 16).
+Tuning (all optional; nodes.py defaults in `_DEFAULTS`, utils.py defaults as module-level constants):
+- Report thresholds: `BUDGET_QUICK_SUMMARY`, `BUDGET_LITERATURE_REVIEW`, `BUDGET_RESEARCH_REPORT`
+- Timeouts: `CODE_EXEC_TIMEOUT` (default 300s), `LATEX_COMPILE_TIMEOUT` (default 60s)
+- Tool execution: `TOOL_DEFAULT_TIMEOUT` (default 60s), `TOOL_MAX_TIMEOUT` (default 300s), `TOOL_STDOUT_LIMIT` (default 4000 chars), `TOOL_STDERR_LIMIT` (default 1000 chars)
+- Plan: `PLAN_REVISE_EVERY` (revise plan every N research steps, default 3)
+- Context windows: `SKILL_CONTENT_LIMIT`, `ARTIFACT_CONTEXT_CHARS`, `PRIOR_SECTION_CHARS`, `SALVAGE_CONTEXT_CHARS`, `TITLE_TOPIC_CHARS`
+- Quality gates: `MIN_SECTION_LENGTH`, `TITLE_MAX_WORDS`
+- Node retries/wait: `NODE_RETRIES` (default 2), `NODE_WAIT` (default 3)
+- Tool execution: `TOOL_DEFAULT_TIMEOUT` (default 60s), `TOOL_MAX_TIMEOUT` (default 300s), `TOOL_STDOUT_LIMIT` (default 4000 chars), `TOOL_STDERR_LIMIT` (default 1000 chars)
+- Step decomposition: `STEP_INSTRUCTION_MAX_WORDS` (default 30)
+- Cost estimation fallbacks: `EST_AVG_PROMPT_TOKENS` (default 500), `EST_AVG_OUTPUT_TOKENS` (default 300)
 
 ## Conventions
 - Skills: `skills/<name>/SKILL.md` — lazy-loaded; index in `skills/skills.json`

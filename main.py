@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import os
 import shutil
 import sys
@@ -107,7 +108,7 @@ def run(topic: str, budget: float, output_dir: str):
     tee.set_path(tmp_traj)
     sys.stdout = tee  # type: ignore[assignment]
     try:
-        flow.run(shared)
+        asyncio.run(flow.run_async(shared))
     finally:
         sys.stdout = tee._orig
         tee.close()

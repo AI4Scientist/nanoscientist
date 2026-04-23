@@ -18,11 +18,13 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from pocketflow import Node
+from pocketflow import Node, AsyncNode
 
 from .utils import (
     call_llm,
+    call_llm_async,
     call_llm_with_tools,
+    call_llm_with_tools_async,
     load_skill_content,
     load_mcp_config,
     filter_mcp_servers,
@@ -36,11 +38,56 @@ from .utils import (
 )
 
 # ---------------------------------------------------------------------------
-# Constants
+# Configuration — all defaults live in .env; these are the fallback values
+# used only when an env var is not set. Edit .env to change behaviour.
 # ---------------------------------------------------------------------------
-BUDGET_RESERVE  = 0.03   # minimum budget to enter writing phase
-WRITE_RESERVE   = 0.015  # minimum budget to enter review phase
-REVIEW_RESERVE  = 0.008  # minimum budget to trigger revision (else compile)
+_DEFAULTS = {
+    # Budget phase gates
+    "BUDGET_RESERVE":          "0.03",
+    "WRITE_RESERVE":           "0.015",
+    "REVIEW_RESERVE":          "0.008",
+    # Report-type budget thresholds
+    "BUDGET_QUICK_SUMMARY":    "0.10",
+    "BUDGET_LITERATURE_REVIEW":"0.50",
+    "BUDGET_RESEARCH_REPORT":  "2.00",
+    # Execution timeouts (seconds)
+    "CODE_EXEC_TIMEOUT":       "300",
+    "LATEX_COMPILE_TIMEOUT":   "60",
+    # Plan revision cadence (every N completed research steps)
+    "PLAN_REVISE_EVERY":       "3",
+    # Prompt context window sizes (chars)
+    "SKILL_CONTENT_LIMIT":     "1500",
+    "ARTIFACT_CONTEXT_CHARS":  "2500",
+    "PRIOR_SECTION_CHARS":     "800",
+    "SALVAGE_CONTEXT_CHARS":   "3000",
+    "TITLE_TOPIC_CHARS":       "2000",
+    # Quality gates
+    "MIN_SECTION_LENGTH":      "100",
+    "TITLE_MAX_WORDS":         "15",
+    # Step decomposition
+    "STEP_INSTRUCTION_MAX_WORDS": "30",
+}
+
+def _cfg(key: str, cast=float) -> float:
+    return cast(os.environ.get(key, _DEFAULTS[key]))
+
+BUDGET_RESERVE          = _cfg("BUDGET_RESERVE")
+WRITE_RESERVE           = _cfg("WRITE_RESERVE")
+REVIEW_RESERVE          = _cfg("REVIEW_RESERVE")
+BUDGET_QUICK_SUMMARY    = _cfg("BUDGET_QUICK_SUMMARY")
+BUDGET_LITERATURE_REVIEW= _cfg("BUDGET_LITERATURE_REVIEW")
+BUDGET_RESEARCH_REPORT  = _cfg("BUDGET_RESEARCH_REPORT")
+CODE_EXEC_TIMEOUT       = _cfg("CODE_EXEC_TIMEOUT",     int)
+LATEX_COMPILE_TIMEOUT   = _cfg("LATEX_COMPILE_TIMEOUT", int)
+PLAN_REVISE_EVERY       = _cfg("PLAN_REVISE_EVERY",     int)
+SKILL_CONTENT_LIMIT     = _cfg("SKILL_CONTENT_LIMIT",   int)
+ARTIFACT_CONTEXT_CHARS  = _cfg("ARTIFACT_CONTEXT_CHARS",int)
+PRIOR_SECTION_CHARS     = _cfg("PRIOR_SECTION_CHARS",   int)
+SALVAGE_CONTEXT_CHARS   = _cfg("SALVAGE_CONTEXT_CHARS", int)
+TITLE_TOPIC_CHARS       = _cfg("TITLE_TOPIC_CHARS",     int)
+MIN_SECTION_LENGTH           = _cfg("MIN_SECTION_LENGTH",           int)
+TITLE_MAX_WORDS              = _cfg("TITLE_MAX_WORDS",              int)
+STEP_INSTRUCTION_MAX_WORDS   = _cfg("STEP_INSTRUCTION_MAX_WORDS",   int)
 
 SECTION_ORDER = {
     "Quick Summary":     ["abstract", "introduction", "discussion", "conclusion"],
@@ -86,9 +133,9 @@ LATEX_SKELETON = r"""\documentclass[11pt]{article}
 # ---------------------------------------------------------------------------
 
 def _report_type(budget: float) -> str:
-    if budget < 0.10:  return "Quick Summary"
-    if budget < 0.50:  return "Literature Review"
-    if budget < 2.00:  return "Research Report"
+    if budget < BUDGET_QUICK_SUMMARY:     return "Quick Summary"
+    if budget < BUDGET_LITERATURE_REVIEW: return "Literature Review"
+    if budget < BUDGET_RESEARCH_REPORT:   return "Research Report"
     return "Full Paper"
 
 
@@ -195,6 +242,19 @@ def _extend_bibtex(shared: dict, new_entries: list[str]):
             existing_keys.add(m.group(1).strip())
 
 
+def _existing_files(shared: dict) -> str:
+    """List all files already written to data/, figures/, scripts/ for scaffolding context."""
+    out_dir = Path(shared.get("output_path", ""))
+    lines = []
+    for sub in ("data", "figures", "scripts"):
+        d = out_dir / sub
+        if d.is_dir():
+            for f in sorted(d.iterdir()):
+                if f.is_file():
+                    lines.append(f"- {sub}/{f.name}")
+    return "\n".join(lines) if lines else "None yet."
+
+
 def _data_summary(shared: dict) -> str:
     """Scan output data/ dir for JSON/CSV files and extract key numeric statistics.
 
@@ -268,7 +328,7 @@ def _run_code_blocks(text: str, skill_name: str, task_dir: Path, shared: dict) -
         cmd = ["python", str(script)] if lang == "python" else ["bash", str(script)]
         try:
             r = subprocess.run(cmd, cwd=str(task_dir), capture_output=True,
-                               text=True, errors="replace", timeout=300,
+                               text=True, errors="replace", timeout=CODE_EXEC_TIMEOUT,
                                env={**os.environ})
             outputs.append(f"[{script.name}] exit={r.returncode}\n{r.stdout[:3000]}")
             if r.returncode != 0:
@@ -345,12 +405,12 @@ def _run_skill(skill_name: str, shared: dict):
 ## Topic: {shared["topic"]}
 ## Skill: {skill_name}
 ## Instructions:
-{skill_content[:1500]}
+{skill_content[:SKILL_CONTENT_LIMIT]}
 
 Return YAML list only:
 ```yaml
 - step: 1
-  instruction: <one focused action, under 30 words>
+  instruction: <one focused action, under {STEP_INSTRUCTION_MAX_WORDS} words>
   needs_code: <true/false>
 ```""",
         budget_remaining=budget)
@@ -375,12 +435,15 @@ Return YAML list only:
 
         abs_out = str(Path(shared["output_path"]).resolve())
         mcp_block = f"\n\n{mcp_context}" if mcp_context else ""
+        existing_files = _existing_files(shared)
         step_prompt = f"""Execute this single research step. Be focused and concise.
 
 ## Topic: {shared["topic"]}
 ## Step: {instruction}
 ## Recent context: {_recent_history(shared, 5)}
 ## Working directory (ABSOLUTE): {abs_out}
+## Already produced files (DO NOT recreate these — read them directly if needed):
+{existing_files}
 ## Environment: All API keys (OPENROUTER_API_KEY, PERPLEXITY_API_KEY, GITHUB_TOKEN, HF_TOKEN, OPENAI_API_KEY, etc.) are pre-loaded from .env and available as environment variables — use them directly in bash commands without reading .env yourself.{mcp_block}
 
 CRITICAL working-directory rules:
@@ -389,6 +452,11 @@ CRITICAL working-directory rules:
 - Save figures to `{abs_out}/figures/` — use ABSOLUTE paths in every command.
 - NEVER use bare `cd` to change to a different base directory. Use absolute paths instead.
 - No plt.show(). Use plt.savefig("{abs_out}/figures/<name>.png") explicitly.
+- For `pip install` or package setup, use `pip install -q --exists-action i <pkg>` and redirect stdout to avoid wasting tool rounds.
+- Do NOT re-fetch or re-compute data that already exists in the files listed above.
+- NEVER use `sleep` — it wastes tool rounds and triggers timeouts. Use immediate retries instead.
+- NEVER use `npx`, `npm`, or `node` — MCP servers are pre-configured and available as environment variables, not via npx.
+- Write large files with Python (`open(...).write(...)`) not shell heredocs (`cat > file << 'EOF'`) — heredocs time out on large content.
 
 After completing the step, summarise findings and append any citations:
 
@@ -425,7 +493,7 @@ This summary will be used by the paper-writing agent.
 {instruction}
 
 ## Partial output so far:
-{step_text[:3000]}
+{step_text[:SALVAGE_CONTEXT_CHARS]}
 
 Write a concise summary (200-400 words) of findings, then cite any relevant papers:
 %%BEGIN BIBTEX%%
@@ -456,31 +524,38 @@ def _write_section(section: str, shared: dict):
     cite_keys = [m.group(1).strip()
                  for e in shared.get("bibtex_entries", [])
                  for m in [re.match(r"@\w+\{([^,]+),", e)] if m]
-    artifact_text = "\n\n".join(f"### {k}\n{v[:2500]}"
+    artifact_text = "\n\n".join(f"### {k}\n{v[:ARTIFACT_CONTEXT_CHARS]}"
                                 for k, v in shared.get("artifacts", {}).items())
     prior_text = ("\n\n## Prior sections\n" +
-                  "\n\n".join(f"### {s}\n{b[:800]}"
+                  "\n\n".join(f"### {s}\n{b[:PRIOR_SECTION_CHARS]}"
                               for s, b in shared.get("section_bodies", {}).items())
                   if shared.get("section_bodies") else "")
     figures_dir = out_dir / "figures"
     figure_files = ([f.name for f in sorted(figures_dir.iterdir())
                      if f.suffix.lower() in (".png", ".pdf", ".jpg", ".jpeg")]
                     if figures_dir.is_dir() else [])
+    figures_used = set(shared.get("figures_used", []))
+    fresh_figures = [f for f in figure_files if f not in figures_used]
+    used_figures  = [f for f in figure_files if f in figures_used]
     figures_block = ""
     if figure_files:
-        figures_block = (
-            "\n\n## Available figures (include at least one relevant figure in this section)\n"
-            + "\n".join(f"- {f}" for f in figure_files)
-            + "\n\nUse this LaTeX pattern for each figure you include:\n"
-            r"""```latex
+        lines = ["\n\n## Figures"]
+        if fresh_figures:
+            lines.append("### Available (not yet used — PREFER THESE):")
+            lines.extend(f"- {f}" for f in fresh_figures)
+        if used_figures:
+            lines.append("### Already used in previous sections (avoid reusing unless essential):")
+            lines.extend(f"- {f}" for f in used_figures)
+        lines.append("\nUse this LaTeX pattern for each figure you include:")
+        lines.append(r"""```latex
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.8\textwidth]{figures/<filename>}
 \caption{<descriptive caption>}
 \label{fig:<label>}
 \end{figure}
-```"""
-        )
+```""")
+        figures_block = "\n".join(lines)
     data_block = _data_summary(shared)
     if data_block:
         data_block = "\n\n" + data_block
@@ -526,7 +601,7 @@ def _write_section(section: str, shared: dict):
         _extend_bibtex(shared, new_entries)
 
     # Retry once if body is suspiciously short (LLM missed markers or refused)
-    if len(body.strip()) < 100:
+    if len(body.strip()) < MIN_SECTION_LENGTH:
         print(f"[PlanDrivenExecutor] '{section}' too short ({len(body)} chars) — retrying with strict prompt")
         retry_text, retry_usage = call_llm(
             f"""IMPORTANT: You MUST output the {section} section content between the markers below.
@@ -534,7 +609,7 @@ Previous attempt produced no usable content. Do not skip this.
 
 ## Topic: {shared["topic"]}
 ## Artifacts
-{artifact_text[:3000]}
+{artifact_text[:ARTIFACT_CONTEXT_CHARS]}
 ## BibTeX keys: {", ".join(cite_keys) or "No citations yet."}
 
 Rules:
@@ -562,14 +637,414 @@ Rules:
     shared.setdefault("section_bodies", {})[section] = body
     if section not in shared.get("sections_written", []):
         shared.setdefault("sections_written", []).append(section)
+    # Track which figures this section referenced to avoid reuse in later sections
+    for fname in re.findall(r"\\includegraphics[^{]*\{figures/([^}]+)\}", body):
+        shared.setdefault("figures_used", [])
+        if fname not in shared["figures_used"]:
+            shared["figures_used"].append(fname)
     # Mark section as failed in plan if still too short after retry
-    if len(body.strip()) < 100:
+    if len(body.strip()) < MIN_SECTION_LENGTH:
         print(f"[PlanDrivenExecutor] WARNING: '{section}' body still empty after retry")
     print(f"[PlanDrivenExecutor] '{section}' written ({len(body)} chars, ${usage['cost']:.4f})")
 
 
+def _generate_workflow_diagram(shared: dict):
+    """Generate a study-workflow diagram from the executed plan steps.
+
+    Produces figures/workflow.png showing the research pipeline actually run.
+    Skipped if matplotlib is unavailable or the figure already exists.
+    """
+    out_dir = Path(shared["output_path"])
+    dest = out_dir / "figures" / "workflow.png"
+    if dest.exists():
+        return  # already generated
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+    except ImportError:
+        print("[workflow] matplotlib not available — skipping workflow diagram")
+        return
+
+    plan = shared.get("plan", [])
+    if not plan:
+        return
+
+    # Build ordered list of (label, status, type) from the executed plan
+    steps = [
+        {
+            "label": t.get("task", "")[:40],
+            "status": t.get("status", "pending"),
+            "type": t.get("type", "research"),
+        }
+        for t in plan
+    ]
+
+    COLOR = {
+        "done":       "#4CAF50",  # green
+        "failed":     "#F44336",  # red
+        "in_progress":"#FF9800",  # orange
+        "pending":    "#9E9E9E",  # grey
+    }
+    TYPE_SHAPE = {"research": "s", "write": "D"}  # square vs diamond (via text)
+
+    n = len(steps)
+    cols = min(4, n)
+    rows = (n + cols - 1) // cols
+
+    fig_w = max(10, cols * 3.2)
+    fig_h = max(4, rows * 2.0 + 1.5)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.set_xlim(-0.5, cols - 0.5)
+    ax.set_ylim(-rows, 0.5)
+    ax.axis("off")
+
+    for i, step in enumerate(steps):
+        row = i // cols
+        col = i % cols
+        x, y = col, -row
+        color = COLOR.get(step["status"], "#9E9E9E")
+        rect = mpatches.FancyBboxPatch(
+            (x - 0.42, y - 0.35), 0.84, 0.70,
+            boxstyle="round,pad=0.05",
+            facecolor=color, edgecolor="white", linewidth=1.5,
+            alpha=0.88,
+        )
+        ax.add_patch(rect)
+        prefix = "R" if step["type"] == "research" else "W"
+        ax.text(x, y + 0.18, f"{prefix}{i+1}", ha="center", va="center",
+                fontsize=7, fontweight="bold", color="white")
+        label = step["label"]
+        if len(label) > 32:
+            label = label[:30] + "…"
+        ax.text(x, y - 0.08, label, ha="center", va="center",
+                fontsize=5.5, color="white", wrap=True,
+                multialignment="center")
+
+        # Arrow to next step in same row
+        if i < n - 1 and (i + 1) % cols != 0:
+            ax.annotate("", xy=(col + 0.44, y), xytext=(col + 1 - 0.44, y),
+                        arrowprops=dict(arrowstyle="<-", color="#555", lw=1.2))
+        # Down-arrow at row boundary
+        if (i + 1) % cols == 0 and i < n - 1:
+            ax.annotate("", xy=(col, y - 0.38), xytext=(col, y - 0.62),
+                        arrowprops=dict(arrowstyle="->", color="#555", lw=1.2))
+
+    # Legend
+    legend_patches = [
+        mpatches.Patch(color=COLOR["done"],        label="done (R=research, W=write)"),
+        mpatches.Patch(color=COLOR["failed"],      label="failed"),
+        mpatches.Patch(color=COLOR["in_progress"], label="in_progress"),
+        mpatches.Patch(color=COLOR["pending"],     label="pending"),
+    ]
+    ax.legend(handles=legend_patches, loc="upper center",
+              bbox_to_anchor=(0.5, 0.08 / fig_h + 1.0),
+              ncol=4, fontsize=7, framealpha=0.7)
+
+    topic = shared.get("topic", "")[:60]
+    ax.set_title(f"Study Workflow — {topic}", fontsize=9, pad=10)
+    plt.tight_layout()
+    plt.savefig(str(dest), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[workflow] diagram saved → {dest}")
+
+
+async def _run_skill_async(skill_name: str, shared: dict):
+    """Async version of _run_skill — LLM calls are awaited concurrently where possible."""
+    budget = shared.get("budget_remaining", 0)
+    skill_content, meta = load_skill_content(shared["skills_dir"], skill_name)
+    can_execute = "Bash" in meta.get("allowed-tools", [])
+    out_dir = Path(shared["output_path"])
+
+    mcp_context = ""
+    if can_execute:
+        api_keys = shared.get("api_keys", {})
+        raw_servers = load_mcp_config()
+        available_servers = filter_mcp_servers(raw_servers, api_keys)
+        mcp_context = format_mcp_context(available_servers)
+
+    text, usage = await call_llm_async(
+        f"""Decompose this research skill into 2-5 atomic steps.
+
+## Topic: {shared["topic"]}
+## Skill: {skill_name}
+## Instructions:
+{skill_content[:SKILL_CONTENT_LIMIT]}
+
+Return YAML list only:
+```yaml
+- step: 1
+  instruction: <one focused action, under {STEP_INSTRUCTION_MAX_WORDS} words>
+  needs_code: <true/false>
+```""",
+        budget_remaining=budget)
+    track_cost(shared, f"research:decompose:{skill_name}", usage)
+    parsed = parse_yaml_response(text)
+    steps = parsed if isinstance(parsed, list) else [
+        {"step": 1, "instruction": "Execute the full skill.", "needs_code": can_execute}]
+
+    scripts_dir = Path(shared["skills_dir"]) / skill_name / "scripts"
+    available_scripts = ([f.name for f in scripts_dir.iterdir() if f.suffix == ".py"]
+                         if scripts_dir.is_dir() else [])
+    data_files = [str(f.relative_to(out_dir))
+                  for sub in ("data", "figures")
+                  for f in (out_dir / sub).iterdir() if f.is_file()] if out_dir.exists() else []
+
+    for s in steps:
+        if shared.get("budget_remaining", 0) < BUDGET_RESERVE:
+            print(f"[ResearchExecutor] Budget exhausted mid-skill, stopping.")
+            break
+        instruction = s.get("instruction", "Execute the full skill.")
+        needs_code = bool(s.get("needs_code")) and can_execute
+
+        abs_out = str(Path(shared["output_path"]).resolve())
+        mcp_block = f"\n\n{mcp_context}" if mcp_context else ""
+        existing_files = _existing_files(shared)
+        step_prompt = f"""Execute this single research step. Be focused and concise.
+
+## Topic: {shared["topic"]}
+## Step: {instruction}
+## Recent context: {_recent_history(shared, 5)}
+## Working directory (ABSOLUTE): {abs_out}
+## Already produced files (DO NOT recreate these — read them directly if needed):
+{existing_files}
+## Environment: All API keys (OPENROUTER_API_KEY, PERPLEXITY_API_KEY, GITHUB_TOKEN, HF_TOKEN, OPENAI_API_KEY, etc.) are pre-loaded from .env and available as environment variables — use them directly in bash commands without reading .env yourself.{mcp_block}
+
+CRITICAL working-directory rules:
+- ALL bash commands run inside {abs_out} — this is enforced by the shell.
+- Save data files to `{abs_out}/data/` — use ABSOLUTE paths in every command.
+- Save figures to `{abs_out}/figures/` — use ABSOLUTE paths in every command.
+- NEVER use bare `cd` to change to a different base directory. Use absolute paths instead.
+- No plt.show(). Use plt.savefig("{abs_out}/figures/<name>.png") explicitly.
+- For `pip install` or package setup, use `pip install -q --exists-action i <pkg>` and redirect stdout to avoid wasting tool rounds.
+- Do NOT re-fetch or re-compute data that already exists in the files listed above.
+- NEVER use `sleep` — it wastes tool rounds and triggers timeouts. Use immediate retries instead.
+- NEVER use `npx`, `npm`, or `node` — MCP servers are pre-configured and available as environment variables, not via npx.
+- Write large files with Python (`open(...).write(...)`) not shell heredocs (`cat > file << 'EOF'`) — heredocs time out on large content.
+
+After completing the step, summarise findings and append any citations:
+
+%%BEGIN BIBTEX%%
+@article{{key, author={{...}}, title={{...}}, journal={{...}}, year={{YYYY}}}}
+%%END BIBTEX%%
+
+CITATION RULES:
+- Keys MUST follow author+year format (e.g. smith2023attention, vaswani2017transformer).
+- Do NOT use internal filenames as keys (e.g. dataset_metadata, classification_results, analysis_report).
+- Every entry MUST have author= and title= fields with real values."""
+
+        if needs_code:
+            step_text, step_usage = await call_llm_with_tools_async(
+                step_prompt,
+                budget_remaining=shared.get("budget_remaining", 0),
+                cwd=abs_out,
+            )
+            code_outputs = []
+            if step_usage.get("tool_rounds_exhausted"):
+                shared.setdefault("exhausted_steps", []).append(
+                    {"skill": skill_name, "step": s.get("step", 1)})
+                print(f"[ResearchExecutor] WARNING: {skill_name}/step{s.get('step',1)} "
+                      f"hit max tool rounds — issuing summary call to salvage partial findings.")
+                salvage_text, salvage_usage = await call_llm_async(
+                    f"""You were executing a research step but ran out of tool rounds.
+Summarise ALL findings and data you collected so far in this step.
+Include any file paths created, statistics found, and key results.
+This summary will be used by the paper-writing agent.
+
+## Step that was executing:
+{instruction}
+
+## Partial output so far:
+{step_text[:SALVAGE_CONTEXT_CHARS]}
+
+Write a concise summary (200-400 words) of findings, then cite any relevant papers:
+%%BEGIN BIBTEX%%
+@article{{key, author={{...}}, title={{...}}, year={{YYYY}}}}
+%%END BIBTEX%%""",
+                    budget_remaining=shared.get("budget_remaining", 0),
+                )
+                track_cost(shared, f"research:salvage:{skill_name}", salvage_usage)
+                step_text = step_text + "\n\n## SALVAGE SUMMARY\n" + salvage_text
+        else:
+            step_text, step_usage = await call_llm_async(
+                step_prompt,
+                budget_remaining=shared.get("budget_remaining", 0),
+            )
+            code_outputs = []
+
+        track_cost(shared, f"research:step:{skill_name}", step_usage)
+        _save_artifact(step_text, skill_name, f"step{s.get('step',1)}",
+                       code_outputs, step_usage, shared)
+        print(f"[ResearchExecutor] {skill_name}/step{s.get('step',1)} done. "
+              f"Budget: ${shared['budget_remaining']:.4f}")
+
+
+async def _write_section_async(section: str, shared: dict):
+    """Async version of _write_section."""
+    out_dir = Path(shared["output_path"])
+    cite_keys = [m.group(1).strip()
+                 for e in shared.get("bibtex_entries", [])
+                 for m in [re.match(r"@\w+\{([^,]+),", e)] if m]
+    artifact_text = "\n\n".join(f"### {k}\n{v[:ARTIFACT_CONTEXT_CHARS]}"
+                                for k, v in shared.get("artifacts", {}).items())
+    prior_text = ("\n\n## Prior sections\n" +
+                  "\n\n".join(f"### {s}\n{b[:PRIOR_SECTION_CHARS]}"
+                              for s, b in shared.get("section_bodies", {}).items())
+                  if shared.get("section_bodies") else "")
+    figures_dir = out_dir / "figures"
+    figure_files = ([f.name for f in sorted(figures_dir.iterdir())
+                     if f.suffix.lower() in (".png", ".pdf", ".jpg", ".jpeg")]
+                    if figures_dir.is_dir() else [])
+    figures_used = set(shared.get("figures_used", []))
+    fresh_figures = [f for f in figure_files if f not in figures_used]
+    used_figures  = [f for f in figure_files if f in figures_used]
+    figures_block = ""
+    if figure_files:
+        lines = ["\n\n## Figures"]
+        if fresh_figures:
+            lines.append("### Available (not yet used — PREFER THESE):")
+            lines.extend(f"- {f}" for f in fresh_figures)
+        if used_figures:
+            lines.append("### Already used in previous sections (avoid reusing unless essential):")
+            lines.extend(f"- {f}" for f in used_figures)
+        lines.append("\nUse this LaTeX pattern for each figure you include:")
+        lines.append(r"""```latex
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/<filename>}
+\caption{<descriptive caption>}
+\label{fig:<label>}
+\end{figure}
+```""")
+        figures_block = "\n".join(lines)
+    data_block = _data_summary(shared)
+    if data_block:
+        data_block = "\n\n" + data_block
+
+    text, usage = await call_llm_async(
+        f"""Write the **{section}** section of a {shared.get("report_type","Literature Review").lower()} as compilable LaTeX.
+
+## Topic: {shared["topic"]}
+## Artifacts
+{artifact_text}{prior_text}{figures_block}{data_block}
+
+## BibTeX keys: {", ".join(cite_keys) or "No citations yet."}
+
+## Rules
+- Output ONLY this section's LaTeX (\\section{{...}} onward). No preamble.
+- Use \\cite{{key}} only from keys above. Back every claim.
+- Active voice, formal tone. Escape \\%, \\&, \\#, \\$.
+- Abstract: 150-250 words, no \\cite.
+- Do NOT include \\bibliography, \\bibliographystyle, or \\begin{{thebibliography}} — the skeleton handles these.
+
+%%BEGIN SECTION%%
+\\section{{{section.title()}}}
+...
+%%END SECTION%%
+
+%%BEGIN BIBTEX%%
+@article{{key, ...}}
+%%END BIBTEX%%""",
+        budget_remaining=shared.get("budget_remaining", 0))
+    track_cost(shared, f"writing:{section}", usage)
+
+    sec_m = re.search(r"%%BEGIN SECTION%%(.*?)%%END SECTION%%", text, re.DOTALL)
+    body = sec_m.group(1).strip() if sec_m else text.strip()
+    body = re.sub(r"%%BEGIN BIBTEX%%.*?%%END BIBTEX%%", "", body, flags=re.DOTALL).strip()
+    body = re.sub(r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}", "", body, flags=re.DOTALL).strip()
+    body = re.sub(r"\\bibliographystyle\{[^}]*\}", "", body).strip()
+    body = re.sub(r"\\bibliography\{[^}]*\}", "", body).strip()
+    bib_m = re.search(r"%%BEGIN BIBTEX%%(.*?)%%END BIBTEX%%", text, re.DOTALL)
+    if bib_m:
+        new_entries = [e.strip() for e in re.findall(r"(@\w+\{[^@]+)", bib_m.group(1), re.DOTALL) if e.strip()]
+        _extend_bibtex(shared, new_entries)
+
+    if len(body.strip()) < MIN_SECTION_LENGTH:
+        print(f"[PlanDrivenExecutor] '{section}' too short ({len(body)} chars) — retrying with strict prompt")
+        retry_text, retry_usage = await call_llm_async(
+            f"""IMPORTANT: You MUST output the {section} section content between the markers below.
+Previous attempt produced no usable content. Do not skip this.
+
+## Topic: {shared["topic"]}
+## Artifacts
+{artifact_text[:ARTIFACT_CONTEXT_CHARS]}
+## BibTeX keys: {", ".join(cite_keys) or "No citations yet."}
+
+Rules:
+- Output ONLY LaTeX starting with \\section{{{section.title()}}}
+- Use \\cite{{key}} only from the keys listed above
+- Do NOT include bibliography or preamble
+
+%%BEGIN SECTION%%
+\\section{{{section.title()}}}
+...your content here...
+%%END SECTION%%""",
+            budget_remaining=shared.get("budget_remaining", 0))
+        track_cost(shared, f"writing:{section}:retry", retry_usage)
+        retry_sec_m = re.search(r"%%BEGIN SECTION%%(.*?)%%END SECTION%%", retry_text, re.DOTALL)
+        retry_body = retry_sec_m.group(1).strip() if retry_sec_m else retry_text.strip()
+        retry_body = re.sub(r"%%BEGIN BIBTEX%%.*?%%END BIBTEX%%", "", retry_body, flags=re.DOTALL).strip()
+        retry_body = re.sub(r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}", "", retry_body, flags=re.DOTALL).strip()
+        retry_body = re.sub(r"\\bibliographystyle\{[^}]*\}|\\bibliography\{[^}]*\}", "", retry_body).strip()
+        if len(retry_body.strip()) > len(body.strip()):
+            body = retry_body
+            print(f"[PlanDrivenExecutor] '{section}' retry succeeded ({len(body)} chars)")
+        else:
+            print(f"[PlanDrivenExecutor] '{section}' retry also short ({len(retry_body)} chars) — keeping best")
+
+    shared.setdefault("section_bodies", {})[section] = body
+    if section not in shared.get("sections_written", []):
+        shared.setdefault("sections_written", []).append(section)
+    for fname in re.findall(r"\\includegraphics[^{]*\{figures/([^}]+)\}", body):
+        shared.setdefault("figures_used", [])
+        if fname not in shared["figures_used"]:
+            shared["figures_used"].append(fname)
+    if len(body.strip()) < MIN_SECTION_LENGTH:
+        print(f"[PlanDrivenExecutor] WARNING: '{section}' body still empty after retry")
+    print(f"[PlanDrivenExecutor] '{section}' written ({len(body)} chars, ${usage['cost']:.4f})")
+
+
+async def _assemble_tex_async(shared: dict):
+    """Async version of _assemble_tex — title generation is awaited."""
+    _generate_workflow_diagram(shared)
+    order = _section_order(shared)
+
+    def _clean_body(b: str) -> str:
+        b = re.sub(r"%%BEGIN BIBTEX%%.*?%%END BIBTEX%%", "", b, flags=re.DOTALL)
+        b = re.sub(r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}", "", b, flags=re.DOTALL)
+        b = re.sub(r"\\bibliographystyle\{[^}]*\}", "", b)
+        b = re.sub(r"\\bibliography\{[^}]*\}", "", b)
+        return b.strip()
+
+    cleaned_bodies = {s: _clean_body(b) for s, b in shared.get("section_bodies", {}).items()}
+    body = "\n\n".join(cleaned_bodies.get(s, "")
+                       for s in order if s in cleaned_bodies and s != "abstract")
+    abstract = re.sub(r"\\section\{[Aa]bstract\}\s*", "",
+                      cleaned_bodies.get("abstract", "Abstract not available.")).strip()
+    title_text, title_usage = await call_llm_async(
+        f"Generate a concise academic paper title (under {TITLE_MAX_WORDS} words) for the following research topic. "
+        f"Return ONLY the title, no quotes, no explanation.\n\n{shared.get('topic', '')[:TITLE_TOPIC_CHARS]}",
+        budget_remaining=shared.get("budget_remaining", 0),
+    )
+    track_cost(shared, "title:generate", title_usage)
+    title = title_text.strip().strip('"').strip("'")
+    tex = (LATEX_SKELETON
+           .replace("%% TITLE %%", title)
+           .replace("%% ABSTRACT %%", abstract)
+           .replace("%% BODY %%", body))
+    bib = dedup_bibtex(shared.get("bibtex_entries", []))
+    out_dir = Path(shared["output_path"])
+    (out_dir / "report.tex").write_text(tex, encoding="utf-8")
+    (out_dir / "references.bib").write_text(bib, encoding="utf-8")
+    shared["tex_content"] = tex
+    shared["bib_content"] = bib
+    print(f"[PlanDrivenExecutor] report.tex assembled ({len(tex)} chars)")
+
+
 def _assemble_tex(shared: dict):
     """Assemble report.tex + references.bib from written sections."""
+    _generate_workflow_diagram(shared)
     order = _section_order(shared)
     # Defensive: strip any BibTeX marker blocks and bibliography environments that leaked into section bodies
     def _clean_body(b: str) -> str:
@@ -583,15 +1058,13 @@ def _assemble_tex(shared: dict):
                        for s in order if s in cleaned_bodies and s != "abstract")
     abstract = re.sub(r"\\section\{[Aa]bstract\}\s*", "",
                       cleaned_bodies.get("abstract", "Abstract not available.")).strip()
-    # Title-case the topic for the LaTeX title (avoids all-lowercase titles)
-    raw_topic = shared.get("topic", "Research Report")
-    title = " ".join(
-        w if w.lower() in {"a", "an", "the", "and", "but", "or", "for",
-                           "nor", "on", "at", "to", "by", "in", "of", "up",
-                           "as", "is", "it", "vs", "via"} and i > 0
-        else w.capitalize()
-        for i, w in enumerate(raw_topic.split())
+    title_text, title_usage = call_llm(
+        f"Generate a concise academic paper title (under {TITLE_MAX_WORDS} words) for the following research topic. "
+        f"Return ONLY the title, no quotes, no explanation.\n\n{shared.get('topic', '')[:TITLE_TOPIC_CHARS]}",
+        budget_remaining=shared.get("budget_remaining", 0),
     )
+    track_cost(shared, "title:generate", title_usage)
+    title = title_text.strip().strip('"').strip("'")
     tex = (LATEX_SKELETON
            .replace("%% TITLE %%", title)
            .replace("%% ABSTRACT %%", abstract)
@@ -639,7 +1112,7 @@ class Initializer(Node):
 # ===================================================================
 # 2. PlanInitialExecutor  — drafts structured todo list (feedforward control)
 # ===================================================================
-class PlanInitialExecutor(Node):
+class PlanInitialExecutor(AsyncNode):
     def prep(self, shared):
         return {
             "topic": shared["topic"],
@@ -652,11 +1125,11 @@ class PlanInitialExecutor(Node):
             ),
         }
 
-    def exec(self, prep_res):
+    async def exec_async(self, prep_res):
         skills_list = "\n".join(f"- {k}: {v}" for k, v in sorted(prep_res["skill_index"].items()))
         required_sections = SECTION_ORDER.get(prep_res["report_type"],
                                               SECTION_ORDER["Literature Review"])
-        text, usage = call_llm(
+        text, usage = await call_llm_async(
             f"""You are a research planning agent. Draft a concrete, ordered research plan.
 
 ## Topic
@@ -761,7 +1234,7 @@ Return YAML list only:
 # ===================================================================
 # 3. PlanDrivenExecutor  — executes plan steps in order, revises plan
 # ===================================================================
-class PlanDrivenExecutor(Node):
+class PlanDrivenExecutor(AsyncNode):
     def prep(self, shared):
         plan = shared.get("plan", [])
         pending = [t for t in plan if t.get("status") == "pending"]
@@ -775,11 +1248,11 @@ class PlanDrivenExecutor(Node):
             "artifact_index": _artifact_index(shared),
         }
 
-    def exec(self, prep_res):
-        # No-op: actual execution happens in post (needs shared)
+    async def exec_async(self, prep_res):
+        # No-op: actual execution happens in post_async (needs shared)
         return prep_res
 
-    def post(self, shared, prep_res, exec_res):
+    async def post_async(self, shared, prep_res, exec_res):
         step = prep_res["step"]
         budget = prep_res["budget"]
 
@@ -793,7 +1266,6 @@ class PlanDrivenExecutor(Node):
         if step_type == "write":
             section = step.get("section", "")
             if not section:
-                # Infer section from task text as fallback
                 task = step.get("task", "").lower()
                 for s in _section_order(shared):
                     if s in task:
@@ -801,50 +1273,42 @@ class PlanDrivenExecutor(Node):
                         break
             if section:
                 print(f"[PlanDrivenExecutor] write:{section}")
-                _write_section(section, shared)
+                await _write_section_async(section, shared)
                 step["status"] = "done"
             else:
                 print(f"[PlanDrivenExecutor] write step missing section, skipping.")
                 step["status"] = "failed"
         else:
-            # research step
             if skill and skill in shared.get("skill_index", {}):
                 print(f"[PlanDrivenExecutor] research:{skill} — {step.get('task','')}")
                 exhausted_before = len(shared.get("exhausted_steps", []))
-                _run_skill(skill, shared)
+                await _run_skill_async(skill, shared)
                 exhausted_after = len(shared.get("exhausted_steps", []))
                 step["status"] = "failed" if exhausted_after > exhausted_before else "done"
             else:
                 print(f"[PlanDrivenExecutor] unknown skill '{skill}', skipping.")
                 step["status"] = "failed"
 
-        # Optionally revise remaining plan based on new findings (one cheap LLM call)
-        self._maybe_revise_plan(shared, step)
+        await self._maybe_revise_plan_async(shared, step)
 
-        # Check if more pending steps remain
         pending = [t for t in shared.get("plan", []) if t.get("status") == "pending"]
         if pending and shared.get("budget_remaining", 0) >= WRITE_RESERVE:
             return "execute"
         return "review"
 
-    def _maybe_revise_plan(self, shared: dict, completed_step: dict):
-        """Ask LLM if remaining plan needs adjustment based on new findings.
-
-        Only fires every 3rd completed step (to reduce LLM cost), or immediately
-        when a step failed (since failures often require plan changes).
-        """
+    async def _maybe_revise_plan_async(self, shared: dict, completed_step: dict):
+        """Ask LLM if remaining plan needs adjustment based on new findings."""
         pending = [t for t in shared.get("plan", []) if t.get("status") == "pending"]
         if not pending or shared.get("budget_remaining", 0) < BUDGET_RESERVE * 2:
-            return  # skip if too few pending steps or budget tight
+            return
 
-        # Gate: only fire on failures or every 3rd completed research step
         if completed_step.get("status") != "failed":
             done_research = [t for t in shared.get("plan", [])
                              if t.get("status") == "done" and t.get("type") == "research"]
-            if len(done_research) % 3 != 0:
+            if len(done_research) % PLAN_REVISE_EVERY != 0:
                 return
 
-        text, usage = call_llm(
+        text, usage = await call_llm_async(
             f"""You are a research plan monitor. A step just completed:
 Step: {completed_step.get('task','')}
 Skill: {completed_step.get('skill','')}
@@ -889,11 +1353,11 @@ changes:
         for change in changes:
             action = change.get("action")
             if action == "remove":
-                cid = change.get("id")
-                plan[:] = [t for t in plan if t.get("id") != cid or t.get("status") != "pending"]
+                cid = int(change["id"]) if change.get("id") is not None else None
+                plan[:] = [t for t in plan if int(t.get("id", 0)) != cid or t.get("status") != "pending"]
                 print(f"[PlanDrivenExecutor] plan: removed step {cid}")
             elif action == "insert":
-                after_id = change.get("after")
+                after_id = int(change["after"]) if change.get("after") is not None else None
                 new_task = change.get("task", "")
                 new_skill = change.get("skill", "")
                 # Dedup: skip if an equivalent pending/done step already exists
@@ -906,7 +1370,7 @@ changes:
                     print(f"[PlanDrivenExecutor] plan: skipping duplicate insert '{new_task[:60]}'")
                     continue
                 new_step = {
-                    "id": change.get("id", max((t["id"] for t in plan), default=0) + 1),
+                    "id": change.get("id", max((int(t["id"]) for t in plan), default=0) + 1),
                     "type": change.get("type", "research"),
                     "task": new_task,
                     "skill": new_skill,
@@ -914,7 +1378,7 @@ changes:
                 }
                 if change.get("section"):
                     new_step["section"] = change["section"]
-                idx = next((i for i, t in enumerate(plan) if t.get("id") == after_id), len(plan) - 1)
+                idx = next((i for i, t in enumerate(plan) if int(t.get("id", -1)) == after_id), len(plan) - 1)
                 plan.insert(idx + 1, new_step)
                 print(f"[PlanDrivenExecutor] plan: inserted step '{new_step['task'][:60]}'")
         shared["plan"] = plan
@@ -923,8 +1387,8 @@ changes:
 # ===================================================================
 # 4. ReviewExecutor  — runs peer-review skill against assembled draft
 # ===================================================================
-class ReviewExecutor(Node):
-    def prep(self, shared):
+class ReviewExecutor(AsyncNode):
+    async def prep_async(self, shared):
         # Gap check: ensure all required sections have substantive content before review.
         # If any are missing or too short, inject write steps back into the plan and
         # execute them now so the reviewer sees a complete draft.
@@ -963,11 +1427,11 @@ class ReviewExecutor(Node):
                 section = step.get("section", "")
                 if section in gap_sections:
                     print(f"[ReviewExecutor] Gap-filling section: {section}")
-                    _write_section(section, shared)
+                    await _write_section_async(section, shared)
                     step["status"] = "done"
 
         # Assemble .tex before review so reviewer sees the full draft
-        _assemble_tex(shared)
+        await _assemble_tex_async(shared)
         return {
             "topic": shared["topic"],
             "report_type": shared.get("report_type", "Literature Review"),
@@ -979,15 +1443,15 @@ class ReviewExecutor(Node):
             "max_rounds": int(os.environ.get("MAX_REVIEW_ROUNDS", "1")),
         }
 
-    def exec(self, prep_res):
+    async def exec_async(self, prep_res):
         budget = prep_res["budget"]
 
-        # Skip review if budget too low or max rounds reached
+        # Skip review if budget too low or max rounds reached — sync quality gate
         if budget < REVIEW_RESERVE or prep_res["review_rounds"] >= prep_res["max_rounds"]:
             return {"action": "compile", "comments": []}, \
                    {"input_tokens": 0, "output_tokens": 0, "cost": 0}
 
-        text, usage = call_llm(
+        text, usage = await call_llm_async(
             f"""You are a rigorous peer reviewer assessing a draft for top-venue submission.
 Evaluate against NeurIPS/ICML/ICLR/ACL reviewer standards.
 
@@ -1068,6 +1532,7 @@ Do NOT request revision for cosmetic issues — only for checklist violations or
         addressed = shared.get("addressed_comments", [])
         pending = [c for c in major if c.get("id") not in addressed]
 
+        # Sync quality gate: decide compile vs revise based on review results
         if decision.get("action") == "compile" or not pending:
             print(f"[ReviewExecutor] Draft accepted (round {shared['review_rounds']})")
             return "compile"
@@ -1119,7 +1584,7 @@ class CompileTeX(Node):
                     ["pdflatex", "-interaction=nonstopmode", "report.tex"],
                     ["pdflatex", "-interaction=nonstopmode", "report.tex"]]:
             r = subprocess.run(cmd, cwd=out_dir, capture_output=True,
-                               text=True, errors="replace", timeout=60)
+                               text=True, errors="replace", timeout=LATEX_COMPILE_TIMEOUT)
             all_output.append(r.stdout + r.stderr)
         success = (Path(out_dir) / "report.pdf").exists()
         return success, "\n".join(all_output)
@@ -1154,7 +1619,7 @@ class CompileTeX(Node):
 # ===================================================================
 # 7. FixTeX  — fix LaTeX errors or missing citations (max 2 attempts)
 # ===================================================================
-class FixTeX(Node):
+class FixTeX(AsyncNode):
     def prep(self, shared):
         undefined = shared.get("undefined_citations", [])
         return {
@@ -1167,7 +1632,7 @@ class FixTeX(Node):
             "budget_remaining": shared.get("budget_remaining", 0),
         }
 
-    def exec(self, prep_res):
+    async def exec_async(self, prep_res):
         if prep_res["attempt"] >= 2:
             return None, {"input_tokens": 0, "output_tokens": 0, "cost": 0}
 
@@ -1194,7 +1659,7 @@ Current .tex:
 Rules: do not change \\documentclass or \\usepackage lines.
 Common fixes: escape %, &, #, $, _; close environments; fix undefined commands."""
 
-        return call_llm(prompt, budget_remaining=prep_res["budget_remaining"])
+        return await call_llm_async(prompt, budget_remaining=prep_res["budget_remaining"])
 
     def post(self, shared, prep_res, exec_res):
         text, usage = exec_res

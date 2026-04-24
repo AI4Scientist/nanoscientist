@@ -67,6 +67,9 @@ _DEFAULTS = {
     "TITLE_MAX_WORDS":         "15",
     # Step decomposition
     "STEP_INSTRUCTION_MAX_WORDS": "30",
+    # Workflow diagram generation (gpt-image-2)
+    "WORKFLOW_IMAGE_SIZE":        "1536x1024",
+    "WORKFLOW_IMAGE_QUALITY":     "high",
 }
 
 def _cfg(key: str, cast=float) -> float:
@@ -89,6 +92,8 @@ TITLE_TOPIC_CHARS       = _cfg("TITLE_TOPIC_CHARS",     int)
 MIN_SECTION_LENGTH           = _cfg("MIN_SECTION_LENGTH",           int)
 TITLE_MAX_WORDS              = _cfg("TITLE_MAX_WORDS",              int)
 STEP_INSTRUCTION_MAX_WORDS   = _cfg("STEP_INSTRUCTION_MAX_WORDS",   int)
+WORKFLOW_IMAGE_SIZE          = _cfg("WORKFLOW_IMAGE_SIZE",           str)
+WORKFLOW_IMAGE_QUALITY       = _cfg("WORKFLOW_IMAGE_QUALITY",        str)
 
 SECTION_ORDER = {
     "Quick Summary":     ["abstract", "introduction", "discussion", "conclusion"],
@@ -665,33 +670,46 @@ Rules:
 
 
 def _build_workflow_prompt(shared: dict) -> str:
-    """Build a gpt-image-2 prompt describing the research workflow from the executed plan."""
+    """Build a NanaDraw-style gpt-image-2 prompt for the research workflow diagram."""
     plan = shared.get("plan", [])
     topic = shared.get("topic", "research")[:80]
 
-    research_steps = [t["task"][:50] for t in plan if t.get("type") == "research"]
-    write_steps    = [t.get("section") or t["task"][:40]
+    research_steps = [t["task"][:55] for t in plan if t.get("type") == "research"]
+    write_steps    = [t.get("section", t["task"])[:45]
                       for t in plan if t.get("type") == "write"]
 
-    research_block = " → ".join(research_steps) if research_steps else "Literature survey"
-    write_block    = " → ".join(write_steps)    if write_steps    else "Report writing"
+    # Limit to a reasonable number of boxes so the diagram stays readable
+    research_steps = research_steps[:6] or ["Literature Survey", "Data Collection", "Analysis"]
+    write_steps    = write_steps[:5]    or ["Introduction", "Methods", "Results", "Conclusion"]
+
+    # Number the steps NanaDraw-style: "(1) Step Name"
+    r_numbered = "  ".join(f"({i+1}) {s}" for i, s in enumerate(research_steps))
+    w_numbered = "  ".join(f"({i+1}) {s}" for i, s in enumerate(write_steps))
 
     return (
-        f"A clean, professional research workflow diagram for a scientific paper titled '{topic}'. "
-        f"Show a left-to-right flowchart with two swim-lanes: "
-        f"top lane labelled 'Research' contains boxes: {research_block}; "
-        f"bottom lane labelled 'Writing' contains boxes: {write_block}. "
-        "Arrows connect steps in each lane, and a vertical arrow links the Research lane to the Writing lane. "
-        "White background, flat design, muted blue and green color scheme, "
-        "sans-serif labels, no decorative elements."
+        f"Create a publication-quality research study workflow diagram titled \"{topic}\". "
+        "Generate at the HIGHEST resolution possible (aim for 1536x1024 or above). "
+        "Layout: two horizontal swim-lanes, left-to-right flow. "
+        f"Top swim-lane labelled 'Research': numbered stage boxes: {r_numbered}. "
+        f"Bottom swim-lane labelled 'Writing': numbered stage boxes: {w_numbered}. "
+        "Design rules: "
+        "Each stage box MUST have a clearly visible rounded-rectangle bounding shape with a solid "
+        "medium-toned border (2-4px, brightness <= 200 — no white or near-white borders). "
+        "Use varied, saturated fill colors per lane: cool blues/teals for Research, warm greens/ambers for Writing. "
+        "Arrows between stages: thin solid directional arrows with a clear white gap (>=10px) "
+        "between arrow tip/tail and each box — arrows must NOT touch or overlap the boxes. "
+        "A vertical dashed arrow connects the Research lane to the Writing lane in the centre. "
+        "Stage titles: bold sans-serif >=14pt, placed inside or above each box. "
+        "White background, flat modern design, no shadows, no decorative elements, no watermarks. "
+        "All text >=10pt and legible. No text smaller than 10pt anywhere in the image."
     )
 
 
 async def _generate_workflow_diagram_async(shared: dict):
-    """Generate a study-workflow diagram via gpt-image-2, run in executor to avoid blocking.
+    """Generate a study-workflow diagram via gpt-image-2 (skills/gpt-image-2).
 
     Skipped silently if the figure already exists or OPENROUTER_API_KEY is absent.
-    Falls back to a no-op (no matplotlib dependency) so the report still compiles.
+    On failure, prints the error and continues — the report compiles without the figure.
     """
     out_dir = Path(shared["output_path"])
     dest = out_dir / "figures" / "workflow.png"
@@ -702,34 +720,33 @@ async def _generate_workflow_diagram_async(shared: dict):
         print("[workflow] OPENROUTER_API_KEY not set — skipping workflow diagram")
         return
 
-    # Locate the generate.py script relative to this file's project root
     project_root = Path(__file__).resolve().parents[1]
     generate_script = project_root / "skills" / "gpt-image-2" / "scripts" / "generate.py"
     if not generate_script.exists():
         print(f"[workflow] gpt-image-2 script not found at {generate_script} — skipping")
         return
 
+    dest.parent.mkdir(parents=True, exist_ok=True)
     prompt = _build_workflow_prompt(shared)
 
     def _run():
-        r = subprocess.run(
+        return subprocess.run(
             ["python", str(generate_script),
              "-p", prompt,
              "-f", str(dest),
-             "--size", "1536x1024",
-             "--quality", "medium"],
+             "--size", WORKFLOW_IMAGE_SIZE,
+             "--quality", WORKFLOW_IMAGE_QUALITY],
             capture_output=True, text=True, errors="replace",
-            timeout=120,
+            timeout=180,
             env={**os.environ},
         )
-        return r
 
     try:
         r = await asyncio.get_event_loop().run_in_executor(None, _run)
         if r.returncode == 0 and dest.exists():
             print(f"[workflow] diagram saved → {dest}")
         else:
-            print(f"[workflow] gpt-image-2 failed (exit={r.returncode}): {r.stderr[:200]}")
+            print(f"[workflow] gpt-image-2 failed (exit={r.returncode}): {r.stderr[:300]}")
     except Exception as e:
         print(f"[workflow] diagram generation error: {e}")
 

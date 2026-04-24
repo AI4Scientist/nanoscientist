@@ -73,6 +73,7 @@ Tuning (all optional; nodes.py defaults in `_DEFAULTS`, utils.py defaults as mod
 - Tool execution: `TOOL_DEFAULT_TIMEOUT` (default 60s), `TOOL_MAX_TIMEOUT` (default 300s), `TOOL_STDOUT_LIMIT` (default 4000 chars), `TOOL_STDERR_LIMIT` (default 1000 chars)
 - Step decomposition: `STEP_INSTRUCTION_MAX_WORDS` (default 30)
 - Cost estimation fallbacks: `EST_AVG_PROMPT_TOKENS` (default 500), `EST_AVG_OUTPUT_TOKENS` (default 300)
+- Workflow diagram: `WORKFLOW_IMAGE_SIZE` (default `1536x1024`), `WORKFLOW_IMAGE_QUALITY` (default `high`)
 
 ## Conventions
 - Skills: `skills/<name>/SKILL.md` — lazy-loaded; index in `skills/skills.json`

@@ -205,7 +205,7 @@ Skills with `allowed-tools: Bash` get a real tool-calling loop with bash executi
 | `experiment-craft` | Debugging and iteration on existing experiments: 5-step diagnostic flow, structured experiment logging |
 | `experiment-iterative-coder` | Iterative code refinement via plan→code→evaluate→refine cycles with lint/test scoring |
 | `experiment-pipeline` | Structured 4-stage experiment execution: baseline, hyperparameter tuning, proposed method, ablation study |
-| `nano-banana` | Professional presentation slides as images via Gemini image generation with browser review and PPTX packaging |
+| `gpt-image-2` | Professional presentation slides as images via GPT-image-2 generation with browser review and PPTX packaging |
 | `paper-navigator` | Find and read academic papers: keyword search, citation traversal, arXiv monitoring, SOTA lookup |
 | `paper-planning` | Pre-writing paper planning: story design, experiment planning, figure design, 4-week timeline |
 | `paper-rebuttal` | Peer-review rebuttals: score diagnosis, comment prioritization, champion strategy, 18 tactical writing rules |

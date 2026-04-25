@@ -36,11 +36,10 @@ API_KEY_REGISTRY = {
     # --- REQUIRED ---
     "OPENROUTER_API_KEY": "[REQUIRED] Core LLM inference — every node calls the LLM through OpenRouter; without this key the agent cannot run at all",
     # --- SKILL-GATED ---
-    "GOOGLE_API_KEY":     "Required by nano-banana (Gemini image generation for slides)",
     "S2_API_KEY":         "Required by paper-navigator (Semantic Scholar search and citation traversal)",
     "GITHUB_TOKEN":       "Required by paper-navigator and experiment skills (GitHub code/repo search)",
     "HF_TOKEN":           "Required by experiment skills (Hugging Face model/dataset discovery)",
-    "OPENAI_API_KEY":     "Required by paper-2-web (HTML/video/poster export)",
+    "OPENAI_API_KEY":     "Required by gpt-image-2 (AI-generated slides and figures via GPT-image-2)",
     # --- MCP SERVER KEYS ---
     "PERPLEXITY_API_KEY": "Required by perplexity MCP server (AI-powered web search)",
     "CONTEXT7_API_KEY":   "Optional: context7 MCP server (higher rate limits for doc lookup)",

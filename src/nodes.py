@@ -254,9 +254,14 @@ def _extend_bibtex(shared: dict, new_entries: list[str]):
 def _sanitize_section_body(body: str) -> str:
     """Strip all non-body LaTeX leakage from an LLM-generated section."""
     body = re.sub(r"%%BEGIN BIBTEX%%.*?%%END BIBTEX%%", "", body, flags=re.DOTALL)
+    body = re.sub(r"%%BEGIN CODE:\w+%%.*?%%END CODE%%", "", body, flags=re.DOTALL)
     body = re.sub(r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}", "", body, flags=re.DOTALL)
     body = re.sub(r"\\bibliographystyle\{[^}]*\}", "", body)
     body = re.sub(r"\\bibliography\{[^}]*\}", "", body)
+    # Strip raw markdown code fences that would break LaTeX compilation
+    body = re.sub(r"```\w*\n.*?```", "", body, flags=re.DOTALL)
+    # Strip verbatim environments containing code (not prose)
+    body = re.sub(r"\\begin\{verbatim\}.*?\\end\{verbatim\}", "", body, flags=re.DOTALL)
     # Strip any accidentally included preamble (\documentclass, \usepackage, \begin{document})
     body = re.sub(r"\\documentclass\b.*?\n", "", body)
     body = re.sub(r"\\usepackage\b.*?\n", "", body)
@@ -352,7 +357,7 @@ def _run_code_blocks(text: str, skill_name: str, task_dir: Path, shared: dict) -
         try:
             r = subprocess.run(cmd, cwd=str(task_dir), capture_output=True,
                                text=True, errors="replace", timeout=CODE_EXEC_TIMEOUT,
-                               env={**os.environ})
+                               env={**os.environ, "OUTPUT_DIR": str(task_dir)})
             outputs.append(f"[{script.name}] exit={r.returncode}\n{r.stdout[:3000]}")
             if r.returncode != 0:
                 outputs.append(f"[STDERR] {r.stderr[:1000]}")
@@ -674,22 +679,53 @@ async def _write_section_async(section: str, shared: dict):
 
 ## BibTeX keys: {", ".join(cite_keys) or "No citations yet."}
 
-## Rules
+## LaTeX rules
 - Output ONLY this section's LaTeX (\\section{{...}} onward). No preamble, no \\documentclass, no \\usepackage.
-- Use \\cite{{key}} only from keys above. Back every claim.
-- Active voice, formal tone. Escape \\%, \\&, \\#, \\$, and \\_. Metric or variable names containing underscores (e.g. c\\_v, u\\_mass, f\\_1) MUST be wrapped in \\texttt{{}} or math mode ($c_v$) — never left as bare text.
-- Abstract: 150-250 words, no \\cite.
-- Do NOT include \\bibliography, \\bibliographystyle, or \\begin{{thebibliography}} — the skeleton handles these.
-- Tables: use \\resizebox{{\\textwidth}}{{!}}{{...}} around wide tabular environments to prevent overflow. Keep all tables to a CONSISTENT column count and font size so reading experience is uniform across the paper.
-- Long URLs: wrap with \\url{{...}} so they break across lines.
-- Figures: use [htbp] placement and \\includegraphics[width=0.9\\textwidth]{{figures/<filename>}}.
-- Workflow figure: if `workflow.png` appears in the **Available** figures list above (not the "Already used" list), include it ONCE in this section to show the study design. Do NOT include it if it is already listed as "Already used".
-- Hyperparameter details: report only the FINAL chosen values and 1-sentence justification. Do NOT describe the full tuning search, grid details, or intermediate results.
-- Visualizations: ALL charts and plots MUST be generated with seaborn or plotly. Never use single-color bar charts — use a distinct color per category/group.
-- Results/Methods figures: if this is the `results` or `methods` section AND data artifacts are available AND no pre-existing figure fits, output a self-contained Python script in a ```python ... ``` block that generates and SAVES a plot to `figures/<descriptive_name>.png` using seaborn/matplotlib, then include that figure with \\includegraphics in the section body. The script must be fully executable (import os; os.makedirs("figures", exist_ok=True)).
-- Section order: Conclusion MUST be the final section (unless an explicit Appendix follows). Never place any content section after Conclusion.
-- NEVER reference internal file paths (e.g. github_issues.json, arxiv_results.json, /home/..., data/, figures/) in the prose. Use the real dataset/resource name instead (e.g. "GitHub Issues API", "arXiv search results", "our curated corpus").
-- NEVER include absolute filesystem paths in any LaTeX text or \\texttt{{}} blocks.
+- Use \\cite{{key}} only from the BibTeX keys listed above. Back every factual claim with a citation.
+- Do NOT include \\bibliography, \\bibliographystyle, or \\begin{{thebibliography}}.
+- Escape \\%, \\&, \\#, \\$, and \\_ in text mode. Underscored identifiers (e.g. c\\_v, f\\_1, n\\_components) MUST appear in \\texttt{{c\\_v}} or math mode $c_v$ — never bare text.
+- Underscored token names outside equations (e.g. GITHUB\\_TOKEN, model names) MUST use \\texttt{{}}.
+- Unicode symbols (e.g. ≥, —) MUST be replaced with LaTeX equivalents: $\\geq$, \\textemdash{{}} or use ---. Never embed raw Unicode comparison or dash characters.
+- Em dashes in prose are forbidden. Use commas, parentheses, or a new sentence instead.
+- Tables: \\resizebox{{\\textwidth}}{{!}}{{...}} around wide tabular. Consistent column count and font size across all tables.
+- Long URLs: \\url{{...}}. First mention only — move to a footnote on second mention.
+- Figures: [htbp] placement, \\includegraphics[width=0.9\\textwidth]{{figures/<filename>}}. Every \\includegraphics MUST reference a file that already exists in the Available figures list above OR will be generated by a %%BEGIN CODE%% block in this response.
+- Workflow figure: include workflow.png ONCE (first time it appears in the Available list). Skip if already used.
+- NEVER output raw markdown code fences (```python```) or \\begin{{verbatim}} blocks — they break LaTeX. To generate a figure, use ONLY this marker:
+  %%BEGIN CODE:python%%
+  import os, pandas as pd, seaborn as sns, matplotlib.pyplot as plt
+  out = os.environ.get("OUTPUT_DIR", ".")
+  os.makedirs(f"{{out}}/figures", exist_ok=True)
+  # real, complete, executable code — NO ellipsis, NO placeholders
+  plt.savefig(f"{{out}}/figures/<descriptive_name>.png", dpi=300, bbox_inches="tight")
+  plt.close()
+  %%END CODE%%
+  The code MUST be complete and executable as-is. Never use `...` or `# TODO` inside a code block.
+- Hyperparameters: state the justification first, then the value. Example: "To preserve local structure for 2D visualization, we set \\texttt{{n\\_components=2}}." Never list values before the reason.
+- Visualizations: seaborn or plotly only. Distinct color per category — never single-color bar charts.
+
+## Writing rules (apply to every sentence)
+- Active voice. Formal academic tone. Claim–evidence–commentary structure per paragraph.
+- Banned vocabulary (never use): "systematic", "comprehensive", "robust", "novel", "leveraging", "facilitating", "underpinning", "delve", "landscape", "recurring", "actionable", "end-to-end", "paving the way".
+- No em dashes (—) or semicolons in running prose. Use commas, parentheses, or a new sentence.
+- No vague quantifiers: replace "several", "some", "a few", "many", "high", "most" with exact counts.
+- No vacuous openers: do not start a paragraph by restating what was just described. Lead with the finding or the claim.
+- Define every acronym and technical term at first use in the body (not just in the abstract).
+- Introduction must end with numbered specific contributions: "(1) ..., (2) ..., (3) ..."
+- Abstract: 150–250 words, no \\cite, no vague claims — every claim must have a number (e.g. report Cohen's κ, cluster count, or accuracy, not "high agreement").
+- Conclusion must NOT repeat the abstract. It should synthesize what the results mean and what comes next.
+- Limitations section MUST appear before Conclusion, not after it.
+- Results sections report observations only. No "should", "must", "teams should" — those belong in Discussion/Implications.
+- No meta-commentary in figure cross-references (e.g. "(already presented)" is forbidden). Use simply Figure~\\ref{{fig:label}}.
+- Taxonomy/classification papers MUST include a table enumerating every category with its label, count, and an example item.
+- When a data-collection step failed (API rate limit, 0 results due to error), report it as a limitation, NOT as a substantive finding confirming absence of prior work.
+
+## Section order
+Conclusion is the last section before bibliography (unless an explicit Appendix or Acknowledgments follow). Order: Methods → Results → Discussion → Limitations → Conclusion.
+
+## Path rules
+- NEVER reference internal file paths (/home/..., data/, figures/) in prose. Use the real resource name ("GitHub Issues API", "our issue corpus").
+- NEVER embed absolute filesystem paths in \\texttt{{}} blocks visible in the paper.
 
 %%BEGIN SECTION%%
 \\section{{{section.title()}}}
@@ -703,7 +739,15 @@ async def _write_section_async(section: str, shared: dict):
     track_cost(shared, f"writing:{section}", usage)
 
     sec_m = re.search(r"%%BEGIN SECTION%%(.*?)%%END SECTION%%", text, re.DOTALL)
-    body = _sanitize_section_body(sec_m.group(1) if sec_m else text)
+    raw_section = sec_m.group(1) if sec_m else text
+
+    # Execute any %%BEGIN CODE:python%% blocks so figures are generated before sanitization
+    task_dir = Path(shared["output_path"])
+    code_outputs = _run_code_blocks(raw_section, f"write:{section}", task_dir, shared)
+    if code_outputs:
+        print(f"[_write_section_async] '{section}': ran {len(code_outputs)} code block(s)")
+
+    body = _sanitize_section_body(raw_section)
     bib_m = re.search(r"%%BEGIN BIBTEX%%(.*?)%%END BIBTEX%%", text, re.DOTALL)
     if bib_m:
         new_entries = [e.strip() for e in re.findall(r"(@\w+\{[^@]+)", bib_m.group(1), re.DOTALL) if e.strip()]
@@ -1202,41 +1246,54 @@ Evaluate against NeurIPS/ICML/ICLR/ACL reviewer standards.
 - **Clarity**: Well-organized? Reproducible from description alone?
 
 ## Quality checklist — flag any violated item as a major comment
+
+### LaTeX correctness (beyond compilation)
+- Raw markdown code fences (```python```) anywhere in the document body — major: will render as garbage text in PDF
+- \\begin{{verbatim}} blocks containing code scripts in main sections — major: code is not a result; belongs in supplementary material
+- Every \\includegraphics filename must reference a file that exists on disk (was generated by a %%BEGIN CODE%% block or listed in artifacts) — major if referencing a non-existent file
+- Unicode comparison or dash characters (≥, ≤, —) in LaTeX source — must be $\\geq$, $\\leq$, --- or \\textemdash{{}}
+- Underscored identifiers in text mode not wrapped in \\texttt{{}} or math mode — major LaTeX error
+- Hyperparameter values must be typeset consistently: either all \\texttt{{name=value}} or all math mode $name = value$, never mixed
+
 ### Structure
 - Title specific and under 15 words (not all-lowercase)
-- Abstract 150-250 words, self-contained, states problem/approach/findings
-- Introduction ends with 1-3 specific claims
-- Background synthesizes by theme (not chronological list)
-- Every claim backed by citation or evidence
-- Limitations honestly acknowledged
-- Conclusion does not repeat abstract
+- Abstract 150–250 words, self-contained; every claim must include a number (Cohen's κ, accuracy, count) — "high agreement" without a number is a major violation
+- Introduction ends with numbered specific contributions: "(1) ..., (2) ..., (3) ..." — vague "provides insights" is a major violation
+- Background synthesizes by theme, not chronological list
+- Every factual claim backed by citation or evidence
+- Limitations section appears BEFORE Conclusion — Limitations after Conclusion is a major structural error
+- Conclusion does NOT repeat the abstract — if first sentences of both are near-identical, flag as major
+- Taxonomy/classification papers MUST include a table enumerating every category with label, count, and an example item — absence is a major violation
 
 ### Figures & formulas
-- At least one actual **figure** (not just tables) — architecture diagram, workflow, or results plot. Tables alone do NOT satisfy this requirement for Research Report or Full Paper types.
-- Study workflow diagram (`figures/workflow.png`) included in Introduction or Methods — flag as major if absent (even if other figures are present)
-- For empirical studies (methods + results sections present): at least one results figure (bar chart, line plot, scatter) generated from the data
-- All figures referenced in text with self-contained captions
-- Key technical concepts formalized with equations where appropriate
-- All charts/plots use seaborn or plotly; no single-color bar charts (each category has a distinct color)
-- Metric names with underscores (e.g. c_v, u_mass, f_1) must appear as \\texttt{{c\\_v}} or $c_v$ — never as bare text
+- At least one actual figure (not just tables) for Research Report or Full Paper types
+- Study workflow diagram (workflow.png) included in Introduction or Methods — flag as major if absent
+- For empirical studies: at least one results figure (bar chart, line plot, scatter) generated from collected data
+- All figures referenced in text with self-contained captions; NO meta-commentary such as "(already presented)" in cross-references
+- All charts/plots use seaborn or plotly; distinct color per category — no single-color bar charts
+- Metric names with underscores (e.g. c_v, f_1) must appear as \\texttt{{c\\_v}} or $c_v$ — never bare text
 
 ### Tables & hyperparameters
-- All tables use consistent column count and font size across the paper
-- Hyperparameter reporting limited to final values + 1-sentence justification; no tuning grids or search details
+- All tables use consistent column count and font size
+- Hyperparameter justification stated BEFORE the value, not after
 
 ### Section order
-- Conclusion is the LAST section (no content section may follow it except an explicit Appendix)
+- Order must be: Methods → Results → Discussion → Limitations → Conclusion → Bibliography
+- No content section may follow Conclusion except Appendix or Acknowledgments
 
 ### Citations
-- Min 5 (quick summary), 10-15 (lit review), 20+ (full paper)
-- Every \\cite{{key}} resolves; every .bib entry is cited
-- At least 30% from last 5 years
+- Min 5 (quick summary), 10–15 (lit review), 20+ (full paper)
+- Every \\cite{{key}} must resolve in the .bib; every .bib entry must be cited
+- At least 30% of citations from the last 5 years
 
 ### Writing craft
-- Active voice preferred; formal academic tone
-- Narrative follows claim-evidence-commentary pattern
-- No overclaiming or speculation presented as fact
-- Related work organized by theme, positioned against this contribution
+- Active voice; formal academic tone; claim–evidence–commentary structure per paragraph
+- Banned vocabulary present anywhere: "systematic", "comprehensive", "robust", "novel", "leveraging", "facilitating", "underpinning", "delve", "landscape", "recurring", "actionable", "end-to-end", "paving the way" — flag each as minor
+- Em dashes (—) or semicolons in running prose — flag as minor per occurrence
+- Vague quantifiers without numbers ("several", "some", "a few", "many", "high", "most") — flag as minor per occurrence
+- Results sections must not contain implications ("should", "must", "teams should") — flag as major
+- Failed data-collection steps (API rate limit, 0 results due to error) reported as substantive findings — flag as major; must be moved to Limitations
+- No overclaiming: "first" novelty claims require evidence that no prior work exists (a failed API query does NOT constitute such evidence)
 
 ## Available skills for research fixes (use ONLY these exact skill names in the `skill` field)
 {format_skill_index(prep_res["skill_index"])}

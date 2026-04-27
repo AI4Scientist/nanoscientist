@@ -354,7 +354,9 @@ def _run_code_blocks(text: str, skill_name: str, task_dir: Path, shared: dict) -
                 outputs.append(f"[STDERR] {r.stderr[:1000]}")
                 shared.setdefault("failed_code", {})[skill_name] = {
                     "script": str(script), "error": r.stderr or f"exit {r.returncode}", "code": code}
-            print(f"[code] {script.name}: exit={r.returncode}")
+                print(f"[code] WARNING: {script.name} exited {r.returncode} — figure/data it was supposed to produce may be missing")
+            else:
+                print(f"[code] {script.name}: exit={r.returncode}")
         except subprocess.TimeoutExpired:
             outputs.append(f"[{script.name}] TIMEOUT")
             shared.setdefault("failed_code", {})[skill_name] = {

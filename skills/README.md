@@ -1,57 +1,50 @@
 # Skills
 
-This directory contains the **skill library** for EvoSkills. Each subdirectory is a self-contained skill that extends EvoScientist with domain-specific expertise.
+This directory contains the **skill library** for Nano-scientist. Each subdirectory is a self-contained skill that the agent can invoke during a research run.
 
 ## How It Works
 
-EvoScientist discovers skills by scanning `skills/*/SKILL.md`. Each skill is loaded into the agent's context when a user query matches its description. Install commands:
+Skills are lazy-loaded at runtime. The agent reads `skills/skills.json` at startup for routing (id + description only), then loads the full `SKILL.md` body only when a skill is selected for execution.
 
-- **`/install-skill EvoScientist/EvoSkills@skills`** — install all skills at once
-- **`/install-skill EvoScientist/EvoSkills@skills/<name>`** — install a single skill
+Skills with `allowed-tools: Bash` get a real bash tool-calling loop — the model drives shell execution, sees stdout/stderr, and retries on error (up to `MAX_TOOL_ROUNDS`, default 16).
 
-> **Not using EvoScientist?** These skills are compatible with any coding agent via [**skills.sh**](https://skills.sh/):
-> ```bash
-> npx skills add EvoScientist/EvoSkills
-> ```
+Skills without `allowed-tools` use a plain LLM call with no tool access.
 
 ## Available Skills
 
-| Skill | Description |
-| ----- | ----------- |
-| [`research-ideation`](research-ideation/) | Literature grounding, idea generation, tournament ranking & proposal generation |
-| [`paper-planning`](paper-planning/) | Research paper planning & outline generation |
-| [`experiment-pipeline`](experiment-pipeline/) | Structured 4-stage experiment execution |
-| [`experiment-craft`](experiment-craft/) | Experiment debugging, logging & iteration |
-| [`paper-writing`](paper-writing/) | End-to-end paper writing assistance |
-| [`paper-review`](paper-review/) | Automated paper review & feedback |
-| [`paper-rebuttal`](paper-rebuttal/) | Rebuttal writing after peer review |
-| [`academic-slides`](academic-slides/) | Academic presentation & research talk creation |
-| [`experiment-iterative-coder`](experiment-iterative-coder/) | Iterative code refinement (plan → code → evaluate → refine cycles) |
-| [`evo-memory`](evo-memory/) | Persistent research memory & self-evolution |
-| [`paper-navigator`](paper-navigator/) | Academic paper discovery, evaluation & reading |
-| [`research-survey`](research-survey/) | Structured literature survey synthesis |
-| [`gpt-image-2`](gpt-image-2/) | AI-generated presentation slides & illustrations via GPT-image-2 |
+| Skill | Loop | Description |
+| ----- | ---- | ----------- |
+| [`paper-navigator`](paper-navigator/) | Literature | Find and read academic papers: keyword search, citation traversal, arXiv monitoring, SOTA lookup |
+| [`research-survey`](research-survey/) | Literature | Structured literature survey reports: outline, draft, section expansion, final assembly |
+| [`research-ideation`](research-ideation/) | Literature | Literature grounding, multi-persona idea generation, ELO ranking, proposal expansion |
+| [`evo-memory`](evo-memory/) | Literature / Experiment | Persistent research memory: Ideation Memory and Experimentation Memory via IDE/IVE/ESE evolution |
+| [`paper-planning`](paper-planning/) | Literature | Pre-writing paper planning: story design, experiment planning, figure design, 4-week timeline |
+| [`experiment-pipeline`](experiment-pipeline/) | Experiment | Structured 4-stage execution: baseline, hyperparameter tuning, proposed method, ablation study |
+| [`experiment-craft`](experiment-craft/) | Experiment | Experiment debugging: 5-step diagnostic flow, structured experiment logging |
+| [`experiment-iterative-coder`](experiment-iterative-coder/) | Experiment | Iterative code refinement via plan→code→evaluate→refine cycles with lint/test scoring |
+| [`paper-writing`](paper-writing/) | Writing | Academic paper sections: 11-step workflow with LaTeX templates and section guidance |
+| [`paper-review`](paper-review/) | Writing | Self-review before submission: 5-aspect checklist, adversarial stress-testing, figure/table checks |
+| [`paper-rebuttal`](paper-rebuttal/) | Writing | Peer-review rebuttals: score diagnosis, comment prioritization, champion strategy |
+| [`academic-slides`](academic-slides/) | Writing | Academic slide decks and conference talks: narrative arc, slide structure, .pptx generation |
+| [`gpt-image-2`](gpt-image-2/) | Any | Generate and edit images via gpt-image-2: text-to-image, reference editing, inpainting |
+| [`study-workflow`](study-workflow/) | Internal | Generates a research workflow diagram (Literature + Writing swim-lanes) as a PNG |
 
-## Contributing a Skill
-
-### Skill Anatomy
-
-Each skill is a directory under `skills/`:
+## Skill Anatomy
 
 ```
 my-skill/
   SKILL.md          # required — frontmatter + body
+  scripts/          # optional — executable scripts invoked via bash tool
   references/       # optional — docs loaded into agent context
-  assets/           # optional — files used in agent output (templates, images)
 ```
 
-### SKILL.md Frontmatter
+## SKILL.md Frontmatter
 
 ```yaml
 ---
 name: my-skill
-description: "One-line summary. Key method/framework keywords. Use when: specific triggers."
-allowed-tools: Bash          # grants real bash tool-calling loop with error feedback
+description: "One-line summary used for routing."
+allowed-tools: Bash          # grants bash tool-calling loop with error feedback
 required-keys: [MY_API_KEY]  # optional; skill filtered out at startup if key missing
 metadata:
   author: YourName
@@ -60,121 +53,19 @@ metadata:
 ---
 ```
 
-### Description Tips
+## Adding a Skill
 
-The existing skills use a common description pattern that works well for routing accuracy:
-
-```
-"[1-sentence summary]. [Core method/framework keywords].
- Use when: [specific triggers].
- Do NOT use for [scenarios that belong to other skills]."
-```
-
-The `Do NOT use for` clause helps the agent distinguish skills with overlapping domains — for example, `paper-planning` says `Do NOT use for actual writing (use paper-writing)`. This isn't required, but it's helpful when your skill shares keywords with others.
-
-### Body
-
-After the frontmatter, the body contains the skill's full instructions: workflow steps, rules, examples, and cross-references to `references/` files. Structure varies by skill type — see existing skills for patterns.
-
-## Improving an Existing Skill
-
-| Change | Example |
-|--------|---------|
-| Content fix | Correct a rule, add a missing example |
-| Reference update | Update a guide in `references/` |
-| Cross-skill consistency | Ensure related skills agree on shared terms or outputs |
-
-Workflow:
-
-1. Edit the skill files in `skills/<name>/`
-2. Validate structure: the directory must contain `SKILL.md` with valid frontmatter
-3. Manual test: install the skill and try it in EvoSci (`/install-skill path/to/EvoSkills/skills/<name>`)
-4. If you changed the **description**, we recommend running eval with `skill-creator` (see [Testing & Evaluation](#testing--evaluation))
-
-## Adding a New Skill
-
-### 1. Bootstrap
-
-You can ask EvoSci to create a skill for you using the built-in `skill-creator`:
-
-```text
-"Create a new skill called my-new-skill in path/to/EvoSkills/skills"
-```
-
-Or manually create `skills/my-new-skill/SKILL.md` following the frontmatter format above.
-
-### 2. Write the Skill
-
-- Write a clear `description` in the frontmatter — see [Description Tips](#description-tips) for the recommended pattern
-- Write the body with workflow steps, rules, and examples
-- Look at existing skills for inspiration
-
-### 3. Test
-
-Install and try the skill in a real EvoSci session:
-
-```text
-/install-skill path/to/EvoSkills/skills/my-new-skill
-```
-
-### 4. Update README
-
-Add your skill to the table in this file and to the descriptions in the top-level `README.md`.
-
-## Testing & Evaluation
-
-### Manual Testing
-
-The simplest approach — install the skill and use it in real tasks:
-
-1. Start an EvoSci session
-2. Install your skill: `/install-skill path/to/EvoSkills/skills/<name>`
-3. Try queries that should trigger the skill, and queries that should not
-4. Verify the skill produces correct output when loaded
-
-This is sufficient for most content changes.
-
-### Automated Eval with `skill-creator` (Recommended for Description Changes)
-
-EvoScientist ships with a built-in `skill-creator` skill that can systematically evaluate and optimize skill descriptions. To use it:
-
-1. Start an EvoSci session (`skill-creator` is built-in, no extra install needed)
-2. Ask it to evaluate or optimize your skill's description:
-   ```text
-   "Optimize the description for path/to/EvoSkills/skills/paper-planning"
+1. Create `skills/my-skill/SKILL.md` with the frontmatter above and your instructions in the body.
+2. Add an entry to `skills/skills.json`:
+   ```json
+   { "id": "my-skill", "description": "One-line description shown to the agent." }
    ```
-3. `skill-creator` will:
-   - Generate 20 trigger eval queries (10 should-trigger, 10 should-not-trigger)
-   - Let you review and edit the queries
-   - Run an automated eval + improvement loop (train/test split, iterative refinement)
-   - Report the best description with scores
+3. Validate: `python skills/validate_skills.py`
 
-This is the same methodology used to optimize the existing 10 EvoSkills descriptions.
+## Validating Skills
 
-See the [`skill-creator` SKILL.md](https://github.com/EvoScientist/EvoScientist/tree/main/EvoScientist/skills/skill-creator) for full details on the eval workflow.
+```bash
+python skills/validate_skills.py
+```
 
-## Checklist
-
-Use the appropriate tier based on your change:
-
-### Content Changes (no description edit)
-- [ ] SKILL.md frontmatter is valid (name, description, allowed-tools)
-- [ ] Cross-references to `references/` files are correct
-- [ ] Manual test: install skill, run a sample query in EvoSci
-
-### Description Changes
-- [ ] All of the above, plus:
-- [ ] Tested with `skill-creator` eval (recommended) or thorough manual testing
-
-### New Skill
-- [ ] All of the above, plus:
-- [ ] README.md updated with skill entry
-
-## Quick Reference
-
-| Task | Command |
-|------|---------|
-| Install skill for testing | `/install-skill path/to/EvoSkills/skills/my-skill` (in EvoSci session) |
-| Install all skills | `/install-skill path/to/EvoSkills/skills` (in EvoSci session) |
-| Eval with skill-creator | Ask EvoSci: `"Optimize the description for path/to/skills/my-skill"` |
-| Create a new skill | Ask EvoSci: `"Create a new skill called my-skill in path/to/EvoSkills/skills"` |
+Checks all `skills/*/SKILL.md` files for required frontmatter fields, valid `allowed-tools`, and matching `name` vs directory name.

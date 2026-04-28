@@ -12,67 +12,61 @@ python main.py --list-skills
 ## Pipeline
 ```
 Initializer
-  → PlanInitialExecutor
-  → PlanDrivenExecutor (loop)
-  → ReviewExecutor → [execute / compile]
-  → CompileTeX ↔ FixTeX → Finisher
+  → LiteratureReviewLoop   (autonomous loop: terminates on quality gate or budget)
+  → ExperimentationLoop    (autonomous loop: terminates on quality gate or budget)
+  → WritingLoop            (autonomous loop: terminates on quality gate or budget)
+  → CompilingLoop (CompileTeX ↔ FixTeX)
+  → Finisher
 ```
-PlanInitialExecutor drafts a typed todo list (research + write steps).
-PlanDrivenExecutor executes each step in order; optionally revises remaining plan after each step.
-ReviewExecutor appends revision steps to the plan tail and loops back to PlanDrivenExecutor.
-LaTeX compilation runs **exactly once**, as the final PDF generation step.
+Each loop runs `_run_loop`: each iteration the LLM decides `action: skill|done`, the skill executes, then a quality gate checks if the stage goal is met. Loops exit on goal achieved, budget exhaustion, or max iterations.
 
 ## Architecture
 
 | Node | Role |
 |---|---|
 | **Initializer** | Zero LLM calls — infers report type from budget, creates `outputs/<uuid>/` |
-| **PlanInitialExecutor** | One LLM call — drafts typed research+write steps into `shared["plan"]` |
-| **PlanDrivenExecutor** | Loop: pops next pending step → executes (`_run_skill` or `_write_section`) → optionally revises remaining plan; exits to `review` when plan exhausted or budget low |
-| **ReviewExecutor** | Assembles fresh draft, runs peer-review; appends revision steps to plan tail → loops to `execute`; returns `compile` when accepted; controlled by `MAX_REVIEW_ROUNDS` (default 1) |
-| **CompileTeX** | `pdflatex` + `bibtex` pipeline; up to 2 fix attempts |
-| **FixTeX** | Patches citation or LaTeX errors, retries compile |
+| **LiteratureReviewLoop** | Autonomous loop over literature skills (paper-navigator, research-survey, etc.); exits when literature goal met or budget low |
+| **ExperimentationLoop** | Autonomous loop over experiment skills (experiment-pipeline, experiment-craft, etc.); exits when experiment goal met or budget low |
+| **WritingLoop** | Writes all required sections, runs a writing review pass, addresses major comments; assembles final .tex |
+| **CompilingLoop** | `pdflatex` + `bibtex`; FixTeX patches errors and recompiles (up to 2 fix attempts) |
 | **Finisher** | Writes `cost_log.json` + `summary.json`, prints total cost |
 
 ## Key files
 | File | Role |
 |---|---|
-| `src/nodes.py` | 7 nodes + module-level helpers (`_run_skill`, `_write_section`, `_assemble_tex`, `_artifact_index`, `_recent_history`, `_plan_context`, `_run_code_blocks`, `_save_artifact`) |
+| `src/nodes.py` | 7 nodes + helpers (`_run_loop`, `_decide_next_action`, `_execute_skill`, `_quality_gate`, `_write_section`, `_writing_review_pass`, `_assemble_tex`, `_build_context`, `_run_code_blocks`, `_save_artifact`) |
 | `src/flow.py` | PocketFlow wiring |
-| `src/utils.py` | LLM client (`call_llm`, `call_llm_with_tools`), tiktoken counter, cost tracking, BibTeX utils, skill index loading/filtering |
+| `src/utils.py` | LLM client (`call_llm_async`, `call_llm_with_tools_async`), tiktoken counter, cost tracking, BibTeX utils, skill index loading/filtering |
 | `skills/skills.json` | Skill index (id + description) |
 
 ## Shared store keys
-`topic`, `budget_dollars`, `budget_remaining`, `cost_log`, `skill_index`, `skills_dir`, `output_dir`, `output_path`, `report_type`, `history`, `plan`, `artifacts`, `bibtex_entries`, `sections_written`, `section_bodies`, `tex_content`, `bib_content`, `failed_code`, `review_rounds`, `review_comments`, `addressed_comments`, `fix_attempts`, `api_keys`
+`topic`, `budget_dollars`, `budget_remaining`, `cost_log`, `skill_index`, `skills_dir`, `output_dir`, `output_path`, `report_type`, `history`, `artifacts`, `bibtex_entries`, `sections_written`, `section_bodies`, `tex_content`, `bib_content`, `fix_attempts`, `paper_title`, `figures_used`, `api_keys`
 
-`plan` format: `[{"id": int, "type": "research"|"write", "task": str, "skill": str, "section": str (write steps only), "status": "pending"|"in_progress"|"done"|"failed"}]`
+`history` entries: `{"step": int, "stage": "literature"|"experiment"|"writing"|"writing_revision", "label": str, "summary": str, "cost": float, "error": str|null}`
 
 ## Budget reserves
 All values are overridable via env vars (same name). Defaults live in `_DEFAULTS` in `src/nodes.py`.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `BUDGET_RESERVE` | $0.03 | research → writing threshold |
-| `WRITE_RESERVE` | $0.015 | writing → review threshold |
-| `REVIEW_RESERVE` | $0.008 | skip revision if below |
+| `BUDGET_RESERVE` | $0.03 | minimum budget to continue a research loop |
+| `WRITE_RESERVE` | $0.015 | minimum budget to write a section |
+| `REVIEW_RESERVE` | $0.008 | skip writing review if below |
+| `MIN_CALLS_TO_CONTINUE` | 3 | stop loop if estimated remaining calls < this |
 
 ## Environment
 Required: `OPENROUTER_API_KEY` (all nodes).
 Optional (skill-gated): `HF_TOKEN`, `GITHUB_TOKEN`, `OPENAI_API_KEY`.
 Inference: `MODEL_NAME`, `INFERENCE_BASE_URL`, `INPUT_TOKEN_COST_PER_MILLION`, `OUTPUT_TOKEN_COST_PER_MILLION`.
-Agent: `LOOKBACK` (default 3), `MAX_REVIEW_ROUNDS` (default 1), `MAX_TOOL_ROUNDS` (default 16).
+Agent: `LOOKBACK` (default 3), `MAX_REVIEW_ROUNDS` (default 1), `MAX_TOOL_ROUNDS` (default 16), `MAX_LOOP_ITERATIONS` (default 20).
 Tuning (all optional; nodes.py defaults in `_DEFAULTS`, utils.py defaults as module-level constants):
 - Report thresholds: `BUDGET_QUICK_SUMMARY`, `BUDGET_LITERATURE_REVIEW`, `BUDGET_RESEARCH_REPORT`
 - Timeouts: `CODE_EXEC_TIMEOUT` (default 300s), `LATEX_COMPILE_TIMEOUT` (default 60s)
 - Tool execution: `TOOL_DEFAULT_TIMEOUT` (default 60s), `TOOL_MAX_TIMEOUT` (default 300s), `TOOL_STDOUT_LIMIT` (default 4000 chars), `TOOL_STDERR_LIMIT` (default 1000 chars)
-- Plan: `PLAN_REVISE_EVERY` (revise plan every N research steps, default 3)
 - Context windows: `SKILL_CONTENT_LIMIT`, `ARTIFACT_CONTEXT_CHARS`, `PRIOR_SECTION_CHARS`, `SALVAGE_CONTEXT_CHARS`, `TITLE_TOPIC_CHARS`
 - Quality gates: `MIN_SECTION_LENGTH`, `TITLE_MAX_WORDS`
 - Node retries/wait: `NODE_RETRIES` (default 2), `NODE_WAIT` (default 3)
-- Tool execution: `TOOL_DEFAULT_TIMEOUT` (default 60s), `TOOL_MAX_TIMEOUT` (default 300s), `TOOL_STDOUT_LIMIT` (default 4000 chars), `TOOL_STDERR_LIMIT` (default 1000 chars)
-- Step decomposition: `STEP_INSTRUCTION_MAX_WORDS` (default 30)
 - Cost estimation fallbacks: `EST_AVG_PROMPT_TOKENS` (default 500), `EST_AVG_OUTPUT_TOKENS` (default 300)
-- Workflow diagram: `WORKFLOW_IMAGE_SIZE` (default `1536x1024`), `WORKFLOW_IMAGE_QUALITY` (default `high`)
 
 ## Conventions
 - Skills: `skills/<name>/SKILL.md` — lazy-loaded; index in `skills/skills.json`

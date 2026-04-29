@@ -2,7 +2,7 @@
 """Generate a research workflow diagram via the OpenRouter image API.
 
 Usage:
-    python generate.py --output PATH --research-steps JSON_LIST --write-steps JSON_LIST --topic TITLE [--draft TEXT]
+    python generate.py --output PATH --draft TEXT
 """
 import argparse
 import base64
@@ -12,58 +12,65 @@ import sys
 from pathlib import Path
 
 
-def _build_prompt(topic: str, research_steps: list[str], write_steps: list[str],
-                  draft: str = "") -> str:
-    r_bullets = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(research_steps))
-    w_bullets = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(write_steps))
+def _build_prompt(draft: str) -> str:
+    return f"""You are a scientific visualization expert producing publication-quality academic figures. Read the paper draft below and generate a study workflow diagram in the style of top-tier AI/ML conference papers (NeurIPS, ACL, CVPR, ICLR).
 
-    draft_block = ""
-    if draft:
-        draft_block = f"""
-PAPER DRAFT EXCERPT (use this to extract concrete methods, datasets, metrics, and findings for the stage boxes):
-{draft[:4000]}
-"""
+---
 
-    return f"""Generate a camera-ready academic workflow diagram in a modern infographic style.
+PAPER DRAFT:
+{draft}
 
-TOPIC: {topic}
-{draft_block}
-STYLE:
-- Clean, minimal, publication-quality (similar to top-tier conference/journal papers)
-- Soft color palette with stage-based color coding (e.g., blue → orange → green → purple)
-- Rounded rectangles, thin borders, subtle shadows
-- Consistent iconography (line icons)
-- Clear directional arrows (left-to-right primary flow)
+---
 
-LAYOUT:
-- Top row: Research pipeline stages (left-to-right flow)
-- Bottom row: Writing pipeline stages (left-to-right flow)
-- Vertical dashed arrow connecting center of Research row to Writing row (knowledge transfer)
-- Right side: summarized outcomes / contributions
+## Visual Style Reference
 
-RESEARCH STAGES (top row):
-{r_bullets}
+Match this exact visual language — the kind seen in papers like SkillShield, LightGBM routing studies, and SWE-bench analyses:
 
-WRITING STAGES (bottom row):
-{w_bullets}
+**Stage columns:**
+- 3–5 vertical stage columns arranged left-to-right across a wide landscape canvas
+- Each column has a bold colored header with a circled stage number badge (①②③...)
+- Column header uses a distinct accent color (blue, orange, green, purple — one per stage)
+- Column body is a rounded rectangle panel with light tint matching the header color
+- Inside each panel: 1–2 labeled sub-sections with their own mini-panels or grouped content
 
-CONTENT STRUCTURE:
-For each stage box:
-- Title (1–2 words, bold)
-- 1-line description (action-oriented)
-- 2–3 concise bullet points (methods, data, or operations) — drawn from the paper draft if provided
+**Icons:**
+- Use recognizable flat/outline icons appropriate to the content: database cylinders for data, gears for processing, shield for safety, brain/robot for AI reasoning, bar chart for evaluation, tree for models, magnifying glass for analysis
+- Place icons above or left of text labels inside panels
+- Icons should be simple, consistent stroke width, not decorative
 
-REQUIREMENTS:
-- Avoid redundancy across boxes
-- Use short, technical phrasing (no full sentences)
-- Emphasize transformations (input → process → output)
-- Include quantitative signals from the paper (e.g., dataset size, metrics, scale)
-- Ensure visual balance and alignment
+**Typography:**
+- Stage title: bold, ~16pt, colored to match the stage accent
+- Sub-section title: bold italic, ~11pt, accent color
+- Body text: regular weight, ~9–10pt, dark gray
+- Metric callouts: bold inline (e.g. "171 harnesses × 707 issues", "p = 0.0007", "20.4% improvement")
+- Use the paper's exact terminology everywhere
 
-OUTPUT:
-- High-resolution, camera-ready diagram
-- Aspect ratio 3:2, landscape orientation
-- Suitable for direct inclusion in an academic paper"""
+**Arrows:**
+- Thick solid arrows (same color as source stage) for main pipeline flow between columns
+- Thin dashed arrows for secondary/feedback connections within a column
+- Arrow tips are clean, filled triangles
+
+**Color system — functional mapping:**
+- Blue: data collection, inputs, corpus
+- Orange: temporal analysis, processing, adaptation
+- Green: model/evaluation, routing, core system
+- Purple: analysis, output, results, importance
+- Each stage owns one color; use it for header, border, icons, and accent text within that column
+
+**Layout rules:**
+- The diagram must be WIDE and HORIZONTAL — columns arranged left-to-right across a wide landscape canvas, NOT stacked vertically
+- Equal-width columns with consistent gaps (~20px)
+- Columns are tall relative to their width but the overall figure is much wider than it is tall
+- No wasted whitespace at edges
+- Strict grid alignment — no floating elements
+
+**Absolute prohibitions:**
+- No footer, caption, attribution, model name, watermark, or any text outside the diagram frame
+- No gradients, drop shadows heavier than 2px, glow effects
+- No full sentences — phrases and metric values only
+- No generic placeholder labels
+
+The output must be a single image: the diagram only, nothing else."""
 
 
 def _load_env(project_root: Path) -> None:
@@ -79,23 +86,12 @@ def _load_env(project_root: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate research workflow diagram via OpenRouter image API")
     ap.add_argument("--output", required=True, help="Output PNG path")
-    ap.add_argument("--research-steps", required=True, help="JSON array of research step labels")
-    ap.add_argument("--write-steps", required=True, help="JSON array of writing step labels")
-    ap.add_argument("--topic", default="Research Workflow", help="Diagram title")
-    ap.add_argument("--draft", default="", help="Full paper draft text (used to enrich stage box content)")
+    ap.add_argument("--draft", required=True, help="Full paper draft text")
     args = ap.parse_args()
 
-    try:
-        research_steps = json.loads(args.research_steps)
-        write_steps = json.loads(args.write_steps)
-    except json.JSONDecodeError as e:
-        print(f"error: invalid JSON — {e}", file=sys.stderr)
+    if not args.draft.strip():
+        print("error: --draft is empty", file=sys.stderr)
         sys.exit(1)
-
-    if not research_steps:
-        research_steps = ["Literature Survey", "Data Collection", "Analysis"]
-    if not write_steps:
-        write_steps = ["Introduction", "Methods", "Results", "Conclusion"]
 
     project_root = Path(__file__).resolve().parents[3]
     _load_env(project_root)
@@ -105,17 +101,21 @@ def main() -> None:
         print("error: OPENROUTER_API_KEY not set", file=sys.stderr)
         sys.exit(1)
 
-    prompt = _build_prompt(args.topic, research_steps, write_steps, draft=args.draft)
+    prompt = _build_prompt(args.draft)
 
     import urllib.request
     payload = json.dumps({
-        "model": "openai/gpt-5.4-image-2",
-        "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["image", "text"],
+        "model": "openai/dall-e-3",
+        "prompt": prompt,
+        "n": 1,
+        "size": "1792x1024",
+        "quality": "hd",
+        "style": "natural",
+        "response_format": "b64_json",
     }).encode()
 
     req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
+        "https://openrouter.ai/api/v1/images/generations",
         data=payload,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -132,15 +132,11 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        msg = data["choices"][0]["message"]
-        images = msg.get("images") or []
-        if not images:
-            print(f"error: no images in response — {str(data)[:300]}", file=sys.stderr)
+        b64 = data["data"][0]["b64_json"]
+        if not b64:
+            print(f"error: no image data in response — {str(data)[:300]}", file=sys.stderr)
             sys.exit(1)
-        data_url = images[0]["image_url"]["url"]
-        # data_url is "data:image/png;base64,<b64>"
-        b64 = data_url.split(",", 1)[1]
-    except (KeyError, IndexError, ValueError) as e:
+    except (KeyError, IndexError) as e:
         print(f"error: unexpected response shape — {e}: {str(data)[:300]}", file=sys.stderr)
         sys.exit(1)
 

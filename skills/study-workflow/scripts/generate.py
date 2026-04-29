@@ -23,32 +23,120 @@ PAPER DRAFT:
 
 ---
 
-## Composition Constraint
+## Global Layout Constraints (STRICT)
 
-- The layout must extend fully from the left edge to the right edge of the canvas
-- Use the entire horizontal width; leave vertical whitespace above and below if needed
-- Do not center content into a compact square block
-- All stage panels in a single left-to-right row; do not stack vertically
-- If content is dense, reduce text per panel rather than shrinking panel width
-- All content must be centered vertically with large empty margins at top and bottom
-- Do not place any content within 10% of the top or bottom edges
+- The figure must span fully from the left edge to the right edge of the canvas
+- Use the full horizontal width; do NOT compress into a centered block
+- All stages must be arranged in a single horizontal row (left → right)
+- Maintain generous vertical whitespace above and below (top/bottom margins ≥10%)
+- Vertically center all content; no element may touch top/bottom margins
+- Keep inter-stage spacing uniform and visually balanced
 
-## Style
+---
 
-Produce a clean, borderless figure on a plain white background — no outer frame, no border box, no caption, no watermark, no attribution text.
+## Stage Panel Design
 
-The figure shows the study's pipeline as a sequence of colored stage panels, exactly like the figures in SkillShield and LightGBM routing papers:
-- Each stage is a rounded-rectangle panel with a lightly tinted background and a bold colored header (blue, orange, green, purple — one color per stage)
-- Stage headers contain a circled number badge (①②③...) and a bold title in the stage's accent color
-- Inside each panel: sub-sections with flat/outline icons (database cylinder, gear, shield, brain, bar chart, tree, magnifying glass) and short labeled content
-- Text: bold stage titles, bold-italic sub-section titles, regular body text, bold inline metric values
-- Use the paper's exact terminology; phrases and numbers only — no full sentences
-- Thick solid arrows between stages for pipeline flow; thin dashed arrows for secondary links
-- All arrows must be placed in the vertical center of the figure; no arrow may appear within 15% of the left, right, top, or bottom canvas edges
-- Plain white background throughout; no gradients, no heavy shadows, no glow
-- Render with crisp, sharp text and edges — no blur or pixelation
+- Each stage is a rounded rectangle with:
+  - **solid border (MANDATORY; never dashed)**
+  - light tinted background (low saturation)
+  - distinct accent color per stage (blue / orange / green / purple / teal)
 
-The output is the figure only — nothing else."""
+- Header (top of each panel):
+  - Format: "Stage X  TITLE"
+  - Title in ALL CAPS, bold
+  - Accent color applied to title and border
+  - Optional count in parentheses allowed (e.g., "(56)") — but NO explanations of what it means
+
+- Subtitle (1 short line under header):
+  - concise phrase (≤8 words)
+  - no full sentences
+
+---
+
+## Internal Structure (Within Each Stage)
+
+Each stage must follow a **3-tier hierarchy**:
+
+1. **Step Row (horizontal mini-boxes)**
+   - Small rounded boxes labeled A, B, C...
+   - Each contains a short phrase only
+   - Solid borders only
+
+2. **Strategy Blocks (main content boxes)**
+   - Larger rounded rectangles below steps
+   - Bullet-style entries with:
+     - short label
+     - optional numeric value
+     - optional small icon (inline, right-aligned)
+
+3. **NO verbose text**
+   - Use phrases only
+   - No explanatory sentences
+   - No annotations like “numbers indicate …”
+
+---
+
+## Arrows & Flow Semantics
+
+- Primary pipeline flow:
+  - Thick **solid horizontal arrows** between stages
+  - Positioned at vertical centerline
+
+- Secondary relations (if needed):
+  - Thin **dashed arrows**
+  - ONLY for intra-stage or vertical linking
+  - NEVER use dashed borders for boxes
+
+---
+
+## Legend (Bottom Row — STRICT FORMAT)
+
+- Place a **single horizontal legend bar centered at the bottom**
+- Must contain exactly three items:
+  - Offline / Local
+  - External / Online
+  - Live / Production
+
+- Layout:
+  - Icons + labels arranged horizontally
+  - Even spacing across width
+  - Minimal, clean styling
+
+- DO NOT include:
+  - Any explanatory sentences
+  - Any notes about counts or percentages
+
+---
+
+## Explicitly Forbidden Elements
+
+- ❌ No dashed borders on any boxes
+- ❌ No percentage callouts (e.g., "41.1% issues")
+- ❌ No explanatory footnotes (e.g., "numbers in parentheses indicate...")
+- ❌ No outer frame or enclosing border
+- ❌ No title outside the panels
+- ❌ No watermark or attribution
+- ❌ No gradients, shadows, or glow effects
+
+---
+
+## Typography & Rendering
+
+- Use crisp, high-resolution vector-like rendering
+- Strong hierarchy:
+  - Stage title: bold, largest
+  - Step labels: medium bold
+  - Content: regular
+- Align text and icons cleanly; avoid clutter
+- Ensure consistent spacing across all panels
+
+---
+
+## Output Requirement
+
+- Output the **figure only**
+- No captions, no explanations, no surrounding text
+"""
 
 
 def main() -> None:

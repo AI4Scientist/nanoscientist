@@ -163,11 +163,35 @@ def main() -> None:
         print("error: OPENAI_API_KEY not set", file=sys.stderr)
         sys.exit(1)
 
-    prompt = _build_prompt(draft)
-
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key)
+
+    # If draft contains non-ASCII (e.g. Chinese), summarise into English first
+    # so the image model can render legible labels.
+    if any(ord(c) > 127 for c in draft):
+        try:
+            summary_resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Read the research paper draft below and produce a concise English-only "
+                        "description of its research workflow. Output:\n"
+                        "1. Topic (1 sentence, English)\n"
+                        "2. Research steps (3-6 short English phrases)\n"
+                        "3. Writing/output steps (3-5 short English phrases)\n"
+                        "Use ONLY English words. No non-ASCII characters.\n\n"
+                        f"DRAFT:\n{draft[:4000]}"
+                    ),
+                }],
+                max_tokens=400,
+            )
+            draft = summary_resp.choices[0].message.content or draft
+        except Exception as e:
+            print(f"warning: English summary failed ({e}), using raw draft", file=sys.stderr)
+
+    prompt = _build_prompt(draft)
 
     try:
         response = client.images.generate(

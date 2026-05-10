@@ -382,7 +382,8 @@ def _run_code_blocks(text: str, label: str, task_dir: Path, shared: dict) -> lis
             continue
         step_num = len(shared.get("history", [])) + 1
         ext = ".py" if lang == "python" else ".sh"
-        script = task_dir / "scripts" / f"{step_num:02d}_{label}_{i:02d}{ext}"
+        safe_label = re.sub(r"[^\w\-]", "_", label)[:60]
+        script = task_dir / "scripts" / f"{step_num:02d}_{safe_label}_{i:02d}{ext}"
         script.write_text(code, encoding="utf-8")
         cmd = ["python", str(script)] if lang == "python" else ["bash", str(script)]
         try:
@@ -471,15 +472,27 @@ async def _generate_workflow_diagram_async(shared: dict):
         f"{section_text}"
     )
 
+    import tempfile
+
     def _run():
-        return subprocess.run(
-            ["python", str(generate_script),
-             "--output", str(dest),
-             "--draft", draft_text],
-            capture_output=True, text=True, errors="replace",
-            timeout=int(os.environ.get("LATEX_COMPILE_TIMEOUT", "60")),
-            env={**os.environ},
-        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
+                                        encoding="utf-8", delete=False) as tf:
+            tf.write(draft_text)
+            draft_file = tf.name
+        try:
+            return subprocess.run(
+                ["python", str(generate_script),
+                 "--output", str(dest),
+                 "--draft", draft_file],
+                capture_output=True, text=True, errors="replace",
+                timeout=int(os.environ.get("LATEX_COMPILE_TIMEOUT", "60")),
+                env={**os.environ},
+            )
+        finally:
+            try:
+                Path(draft_file).unlink()
+            except OSError:
+                pass
 
     try:
         r = await asyncio.get_running_loop().run_in_executor(None, _run)
@@ -1188,10 +1201,13 @@ class WritingLoop(AsyncNode):
                 print(f"[WritingLoop] Addressing: [{section}] {comment.get('issue','')[:80]}")
                 if fix == "research" and skill and skill in valid_skills:
                     await _execute_skill(skill, "writing_revision", shared)
-                if section:
+                known_sections = shared.get("sections_written", [])
+                if section and section in known_sections:
                     # Force rewrite of the flagged section
                     shared.get("section_bodies", {}).pop(section, None)
                     await _write_section(section, shared)
+                elif section:
+                    print(f"[WritingLoop] Skipping unknown section '{section}' from reviewer")
 
         # Generate workflow diagram via the study-workflow skill, informed by the full draft.
         # Build args that generate.py needs and store them in shared so _execute_skill can use them.
@@ -1243,13 +1259,16 @@ class CompileTeX(Node):
             shared["has_citation_warnings"] = True
 
         if success:
-            if undefined and shared.get("fix_attempts", 0) < 2:
+            if undefined:
                 shared["compile_errors"] = log
                 shared["undefined_citations"] = undefined
                 return "fix"
             print(f"[CompileTeX] PDF: {shared['output_path']}/report.pdf")
             return "done"
 
+        if not _budget_ok(shared, BUDGET_RESERVE_RATIO):
+            print("[CompileTeX] Compilation failed but budget exhausted — stopping.")
+            return "done"
         shared["compile_errors"] = log
         print("[CompileTeX] Compilation failed → fix")
         return "fix"
@@ -1280,6 +1299,7 @@ class FixTeX(AsyncNode):
                 shared.update({"bib_content": combined})
                 print(f"[FixTeX] CrossRef added {len(crossref_resolved)} entries; {len(still_missing)} still missing")
 
+        budget_ok = _budget_ok(shared, BUDGET_RESERVE_RATIO)
         return {
             "tex_content":        shared["tex_content"],
             "bib_content":        shared.get("bib_content", ""),
@@ -1288,10 +1308,11 @@ class FixTeX(AsyncNode):
             "undefined_citations": still_missing,
             "mode":               "citation" if still_missing else ("latex_error" if not undefined else None),
             "budget_remaining":   shared.get("budget_remaining", 0),
+            "budget_ok":          budget_ok,
         }
 
     async def exec_async(self, prep_res):
-        if prep_res["attempt"] >= 2:
+        if not prep_res["budget_ok"]:
             return None, {"input_tokens": 0, "output_tokens": 0, "cost": 0}
         if prep_res["mode"] is None:
             # All undefined citations were resolved by CrossRef — nothing for LLM to do.
@@ -1322,7 +1343,8 @@ class FixTeX(AsyncNode):
                 # All citations resolved by CrossRef — recompile with updated .bib.
                 shared.pop("undefined_citations", None)
                 return "compile"
-            print("[FixTeX] Max attempts reached.")
+            # Budget exhausted — give up.
+            print("[FixTeX] Budget exhausted — stopping fixes.")
             return "done"
         track_cost(shared, f"fix_tex:{shared['fix_attempts']}", usage)
         cleaned = re.sub(r"^```\w*\n?", "", text.strip())
